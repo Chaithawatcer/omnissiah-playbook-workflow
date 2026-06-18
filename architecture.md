@@ -12,42 +12,16 @@
 
 ## ภาพรวมของระบบ (High-Level Overview)
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     Google NotebookLM                                   │
-│        (เก็บ Template + Procedure Docs ทุก Phase)                       │
-└────────────────────────────┬────────────────────────────────────────────┘
-                             │  Analyst ค้นหา Context ด้วยตัวเอง
-                             ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Analyst (Human)                                 │
-│   รับ Context จาก NotebookLM → Copy ใส่ใน Input Form ของระบบ           │
-└────────────────────────────┬────────────────────────────────────────────┘
-                             │  Input (3 ส่วน)
-               ┌─────────────┼─────────────┐
-               ▼             ▼             ▼
-     [IOC / Alert Feed]  [Threat Name]  [Context จาก NotebookLM]
-      เช่น CPU สูง        เช่น           (Procedure / Template
-      Network ผิดปกติ     react2shell     ที่ Analyst คัดมา)
-               │             │
-               ▼             ▼
-     ┌──────────────────────────────┐
-     │   MITRE ATT&CK Mapping Engine│
-     │   (1:1 หรือ 1:Many)          │
-     └──────────────┬───────────────┘
-                    │
-          ┌─────────┴─────────┐
-          ▼                   ▼
-  [Pre-built Playbook]   [LLM Generate]
-  (ดึงมาแสดงทันที)       (Context + Template
-                          → Generate ใหม่)
-          │                   │
-          └─────────┬─────────┘
-                    ▼
-         ┌────────────────────┐
-         │   Playbook Output   │
-         │ (Markdown / PDF)    │
-         └────────────────────┘
+```mermaid
+graph TD
+    user["Analyst (Human)"] -- "1. Search Context" --> nb["Google NotebookLM (Templates & Phase Docs)"]
+    user -- "2. Feed Input" --> input["Input Form (n8n)"]
+    input --> mapper["MITRE ATT&CK Mapping Engine"]
+    mapper --> route{"Select Mode"}
+    route -- "Mode A" --> prebuilt["Pre-built Playbook Store (Direct Retrieval)"]
+    route -- "Mode B" --> generate["LLM Generation Engine (Context + Template)"]
+    prebuilt --> output["Playbook Output (Markdown / PDF)"]
+    generate --> output
 ```
 
 ---
@@ -56,206 +30,113 @@
 
 ### Layer 1 — Input Layer (ชั้นรับข้อมูล)
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                     INPUT LAYER                          │
-│                                                          │
-│  ┌─────────────────────────┐  ┌──────────────────────┐  │
-│  │     Mode A: IOC Feed    │  │  Mode B: Threat Name │  │
-│  │  ─────────────────────  │  │  ──────────────────  │  │
-│  │  • IP Address           │  │  • ชื่อ Attack        │  │
-│  │  • File Hash (MD5/SHA)  │  │    Technique         │  │
-│  │  • Domain Name          │  │  • ชื่อ Malware       │  │
-│  │  • Alert Description    │  │  • Campaign Name     │  │
-│  │  • SIEM Alert Text      │  │  • CVE Number        │  │
-│  │  • Log Snippet          │  │                      │  │
-│  └─────────────────────────┘  └──────────────────────┘  │
-│                    │                      │              │
-│                    ▼                      ▼              │
-│           ┌──────────────────────────────────┐           │
-│           │    Input Validator & Classifier  │           │
-│           │  (ตรวจสอบ format + จำแนก Mode)  │           │
-│           └──────────────────────────────────┘           │
-└──────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph InputLayer ["Input Layer"]
+        modeA["Mode A: IOC Feed (IP, File Hash, Domain, Log)"] 
+        modeB["Mode B: Threat Name (Attack, Malware, CVE)"]
+        context["Manual Context (Procedures from NotebookLM)"]
+    end
+    modeA --> val["Input Validator & Classifier"]
+    modeB --> val
+    context --> val
 ```
 
 ---
 
 ### Layer 2 — Mapping Engine (ชั้นจับคู่ MITRE ATT&CK)
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                  MITRE ATT&CK MAPPING LAYER              │
-│                                                          │
-│  ┌─────────────────────────────────────────────────────┐ │
-│  │              MITRE ATT&CK Knowledge Base            │ │
-│  │  ┌────────────────────┐  ┌────────────────────────┐ │ │
-│  │  │  Tactics (14)      │  │  Techniques (500+)     │ │ │
-│  │  │  ─────────────     │  │  ──────────────────    │ │ │
-│  │  │  • Reconnaissance  │  │  • T1566 (Phishing)    │ │ │
-│  │  │  • Initial Access  │  │  • T1059 (Cmd Script)  │ │ │
-│  │  │  • Execution       │  │  • T1078 (Valid Acct)  │ │ │
-│  │  │  • Persistence     │  │  • T1003 (OS Cred)     │ │ │
-│  │  │  • ...             │  │  • ...                 │ │ │
-│  │  └────────────────────┘  └────────────────────────┘ │ │
-│  └─────────────────────────────────────────────────────┘ │
-│                                                          │
-│  ┌──────────────────────┐  ┌──────────────────────────┐  │
-│  │  Mode A Mapper       │  │  Mode B Mapper           │  │
-│  │  ──────────────────  │  │  ──────────────────────  │  │
-│  │  IOC → 1 Technique   │  │  Threat → [T1, T2, T3…]  │  │
-│  │  (Rule-based Match)  │  │  (Semantic Search + API) │  │
-│  └──────────┬───────────┘  └─────────────┬────────────┘  │
-│             │                            │               │
-│             ▼                            ▼               │
-│    [Technique ID Found]       [Technique ID List Found]  │
-└──────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph MappingLayer ["MITRE ATT&CK Mapping Layer"]
+        kb["MITRE ATT&CK Knowledge Base (Tactics & Techniques)"]
+        mapperA["Mode A Mapper (IOC -> 1 Technique ID)"]
+        mapperB["Mode B Mapper (Threat -> Multiple Technique IDs)"]
+    end
+    kb --> mapperA
+    kb --> mapperB
 ```
 
 ---
 
 ### Layer 3 — Playbook Retrieval & Generation Engine
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│              PLAYBOOK ENGINE LAYER                                   │
-│                                                                      │
-│    ┌─────────────────────────────────────────────────────────────┐   │
-│    │             👤 HUMAN-IN-THE-LOOP STEP                       │   │
-│    │                                                             │   │
-│    │   Analyst เปิด Google NotebookLM แยกต่างหาก               │   │
-│    │   → ถามหา Procedure ของ Technique ที่ Map ได้               │   │
-│    │   → NotebookLM ตอบด้วย Context จากเอกสารที่อัปโหลดไว้      │   │
-│    │   → Analyst คัดลอก Context ที่เกี่ยวข้องมา                 │   │
-│    └──────────────────────────┬──────────────────────────────────┘   │
-│                               │  Context (Text) จาก Analyst          │
-│         Mode A Path           ▼            Mode B Path               │
-│  ┌─────────────────┐  ┌───────────────┐  ┌─────────────────────────┐ │
-│  │ Pre-built        │  │  Context Input│  │  LLM Generation Engine  │ │
-│  │ Playbook Store  │  │  (จาก NB LM)  │  │  ─────────────────────  │ │
-│  │ ───────────────  │  └──────┬────────┘  │  รับ:                   │ │
-│  │ • เก็บแบบ File  │         │           │  • Context จาก NotebookLM│ │
-│  │   หรือ DB ง่ายๆ │         └───────────▶  • Mastertemplate        │ │
-│  │ • Index ด้วย    │                     │  • System Prompt         │ │
-│  │   Technique ID  │                     │  → Generate Playbook     │ │
-│  │ • ดึง Playbook  │                     └─────────────┬───────────┘ │
-│  │   มาแสดงทันที  │                                   │              │
-│  └────────┬─────── ┘                                  │              │
-│           └──────────────────────────┬─────────────────┘              │
-│                                      ▼                                │
-│                        ┌─────────────────────────┐                    │
-│                        │   Playbook Output Layer  │                    │
-│                        └─────────────────────────┘                    │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph PlaybookEngine ["Playbook Engine Layer"]
+        search["1. Analyst searches Google NotebookLM"] --> get["2. Retrieves Procedure Context"]
+        get --> input["3. Feeds Context to n8n"]
+        input --> gen["LLM Generation Engine"]
+        templates["Templates (Mastertemplate & Phase Docs)"] --> gen
+        prebuilt["Pre-built Playbook Store"] -- "Direct Retrieval" --> output["Playbook Output"]
+        gen --> output
+    end
 ```
 
 ---
 
 ### Layer 4 — n8n Workflow Orchestration (ชั้นควบคุม Workflow)
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    n8n WORKFLOW ORCHESTRATION                       │
-│                                                                     │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌────────────────┐  │
-│  │  Webhook │──▶│ Classify │──▶│  Route   │──▶│  Sub-Workflow  │  │
-│  │  Node    │   │  Node    │   │  (IF)    │   │  Mode A / B    │  │
-│  │ (รับInput)│  │(จำแนก   │   │  Node    │   │                │  │
-│  │          │   │  Mode)   │   │          │   │                │  │
-│  └──────────┘   └──────────┘   └──────────┘   └────────────────┘  │
-│                                                         │           │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐            │           │
-│  │  Format  │◀──│  LLM     │◀──│  RAG     │◀───────────┘           │
-│  │  Output  │   │  Node    │   │  Node    │                        │
-│  │  Node    │   │(Gemini / │   │(Vector   │                        │
-│  │          │   │ OpenAI)  │   │ Search)  │                        │
-│  └────┬─────┘   └──────────┘   └──────────┘                        │
-│       │                                                             │
-│       ▼                                                             │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │   Output Node: ส่งผลลัพธ์กลับ (JSON / Markdown / PDF)        │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    webhook["Webhook Node"] --> classify["Classify Node"]
+    classify --> route{"Route Node (IF)"}
+    route -- "Mode A" --> fetch["Fetch Pre-built Playbook"]
+    route -- "Mode B" --> rag["RAG Node (Retrieve Manual Context)"]
+    rag --> llm["LLM Node (Gemini / OpenAI)"]
+    fetch --> format["Format Output Node"]
+    llm --> format
+    format --> output["Output Node (JSON / Markdown / PDF)"]
 ```
 
 ---
 
 ### Layer 5 — Data & Storage Layer (ชั้นจัดเก็บข้อมูล)
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                    DATA & STORAGE LAYER                              │
-│                                                                      │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │  ☁️  Google NotebookLM  (Knowledge Base หลัก)               │    │
-│  │  ────────────────────────────────────────────────────────    │    │
-│  │  • Mastertemplate (โครงสร้าง Playbook)                      │    │
-│  │  • Preparation Phase Docs (แยกตาม Attack Type)              │    │
-│  │  • Identify & Analysis Phase Docs                           │    │
-│  │  • Containment Phase Docs                                   │    │
-│  │  • Eradication Phase Docs                                   │    │
-│  │  • MITRE ATT&CK Reference Docs                              │    │
-│  │  • Analyst ค้นหาผ่าน UI ของ NotebookLM เอง                 │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │  📁 Pre-built Playbook Repository (Local / Cloud Storage)   │    │
-│  │  ────────────────────────────────────────────────────────    │    │
-│  │  • Playbook สำเร็จรูปที่ผ่านการ validate แล้ว (Mode A)      │    │
-│  │  • Index ด้วย Technique ID (T1566, T1059, …)                │    │
-│  │  • Format: Markdown / JSON / PDF                            │    │
-│  │  • เก็บใน Google Drive / Local Folder / Simple DB           │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Storage ["Data & Storage Layer"]
+        nblm["Google NotebookLM (Mastertemplate, Procedures, MITRE Docs)"]
+        store["Pre-built Playbook Repository (Validated Playbooks by Technique ID)"]
+    end
 ```
 
 ---
 
 ## Playbook Document Structure (โครงสร้างเอกสารที่ Generate)
 
-```
-┌─────────────────────────────────────────────────────┐
-│            PLAYBOOK OUTPUT STRUCTURE                │
-│         (จาก Mastertemplate + Phase Docs)           │
-├─────────────────────────────────────────────────────┤
-│  📋 Header                                          │
-│  ├─ Playbook ID (PB-XXXX)                           │
-│  ├─ Threat Name / Technique ID                      │
-│  ├─ MITRE ATT&CK Mapping                            │
-│  ├─ Severity Level                                  │
-│  └─ Last Updated                                    │
-├─────────────────────────────────────────────────────┤
-│  1️⃣  Preparation Phase                              │
-│  ├─ Prerequisites / Required Tools                  │
-│  ├─ Team Roles & Responsibilities                   │
-│  └─ Initial Checklist                               │
-├─────────────────────────────────────────────────────┤
-│  2️⃣  Identification & Analysis Phase                │
-│  ├─ Detection Indicators (IOC)                      │
-│  ├─ Log Sources to Check                            │
-│  ├─ Analysis Steps (ทีละขั้น)                       │
-│  └─ Severity Assessment Criteria                    │
-├─────────────────────────────────────────────────────┤
-│  3️⃣  Containment Phase                              │
-│  ├─ Short-term Containment (ฉุกเฉิน)                │
-│  ├─ Long-term Containment                           │
-│  └─ Evidence Preservation Steps                     │
-├─────────────────────────────────────────────────────┤
-│  4️⃣  Eradication Phase                              │
-│  ├─ Root Cause Removal Steps                        │
-│  ├─ System Hardening Actions                        │
-│  └─ Vulnerability Patching                          │
-├─────────────────────────────────────────────────────┤
-│  5️⃣  Recovery Phase                                 │
-│  ├─ System Restoration Steps                        │
-│  ├─ Verification & Testing                          │
-│  └─ Return to Normal Operations                     │
-├─────────────────────────────────────────────────────┤
-│  6️⃣  Post-Incident Review                           │
-│  ├─ Lessons Learned                                 │
-│  └─ Improvement Actions                             │
-└─────────────────────────────────────────────────────┘
-```
+โครงสร้างมาตรฐานของเอกสาร Playbook ที่สร้างขึ้นจาก Mastertemplate ประกอบด้วยหัวข้อดังนี้:
+
+- **📋 Header Information**
+  - Playbook ID (PB-XXXX)
+  - Threat Name / Technique ID
+  - MITRE ATT&CK Mapping
+  - Severity Level (ระดับความรุนแรง)
+  - Last Updated (วันที่อัปเดตล่าสุด)
+- **1️⃣ Preparation Phase**
+  - Prerequisites / Required Tools (เครื่องมือและข้อกำหนดเบื้องต้น)
+  - Team Roles & Responsibilities (บทบาทหน้าที่ของทีมงาน)
+  - Initial Checklist (รายการตรวจสอบเบื้องต้น)
+- **2️⃣ Identification & Analysis Phase**
+  - Detection Indicators / IOC (สิ่งบ่งชี้ภัยคุกคาม)
+  - Log Sources to Check (แหล่งข้อมูล Log ที่ต้องตรวจสอบ)
+  - Analysis Steps (ขั้นตอนการวิเคราะห์)
+  - Severity Assessment Criteria (เกณฑ์การประเมินความรุนแรง)
+- **3️⃣ Containment Phase**
+  - Short-term Containment (การควบคุมความเสียหายระยะสั้น/ฉุกเฉิน)
+  - Long-term Containment (การควบคุมความเสียหายระยะยาว)
+  - Evidence Preservation Steps (ขั้นตอนการเก็บรักษาหลักฐาน)
+- **4️⃣ Eradication Phase**
+  - Root Cause Removal Steps (ขั้นตอนการกำจัดต้นตอของปัญหา)
+  - System Hardening Actions (การปรับปรุงความปลอดภัยของระบบ)
+  - Vulnerability Patching (การแก้ไขช่องโหว่)
+- **5️⃣ Recovery Phase**
+  - System Restoration Steps (ขั้นตอนการกู้คืนระบบกลับมาใช้งาน)
+  - Verification & Testing (การตรวจสอบและทดสอบความพร้อม)
+  - Return to Normal Operations (การกลับเข้าสู่การดำเนินงานปกติ)
+- **6️⃣ Post-Incident Review**
+  - Lessons Learned (บทเรียนที่ได้รับ)
+  - Improvement Actions (ข้อแนะนำเพื่อปรับปรุงระบบ)
 
 ---
 
@@ -276,58 +157,27 @@
 
 ## Data Flow แบบ Step-by-Step (Semi-Automated)
 
-```
-╔══════════════════════════════════════════════════════════════════╗
-║              🔵 PHASE 1: Analyst Prep (ทำก่อน)                 ║
-╚══════════════════════════════════════════════════════════════════╝
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Analyst
+    participant NB as Google NotebookLM
+    participant n8n as n8n Workflow
+    participant LLM as LLM API
+    participant Store as Playbook Store
 
-STEP 1: Analyst เปิด Google NotebookLM
-        → ถามหา Procedure ที่ตรงกับ Threat / Technique
-        → อ่านและคัดลอก Context ที่เกี่ยวข้อง (Preparation / Identify / Containment / Eradication)
-        │
-        ▼
-STEP 2: Analyst ได้ Context เป็น Text กลับมา
-
-╔══════════════════════════════════════════════════════════════════╗
-║              🟢 PHASE 2: n8n Automated Pipeline                ║
-╚══════════════════════════════════════════════════════════════════╝
-
-STEP 3: Analyst กรอก Input Form (บน n8n หรือ Simple Web UI)
-        ├─ ช่อง 1: IOC / Alert หรือ Threat Name
-        ├─ ช่อง 2: Context ที่คัดมาจาก NotebookLM
-        └─ ช่อง 3: เลือก Mode (A = Pre-built / B = Generate)
-        │
-        ▼
-STEP 4: Input Validator Node (n8n)
-        ตรวจสอบ Format + จำแนก Mode
-        │
-        ▼ (Mode A)                          ▼ (Mode B)
-STEP 5A: MITRE Mapping (1:1)           STEP 5B: MITRE Mapping (1:Many)
-         IOC → Technique ID                     Threat → [T1, T2, T3…]
-         │                               │
-         ▼                               ▼
-STEP 6A: ค้นหา Pre-built Playbook      STEP 6B: LLM Node (n8n)
-         จาก Playbook Store                     รับ Input:
-         ด้วย Technique ID                      - Context จาก Analyst (NotebookLM)
-         → ดึง Playbook ทันที                   - Mastertemplate
-                                                - System Prompt
-                                                → Generate Playbook
-        │                               │
-        └──────────────┬────────────────┘
-                       ▼
-STEP 7: Format Output Node (n8n)
-        แปลงเป็น Markdown / PDF
-        │
-        ▼
-STEP 8: ส่งกลับให้ Analyst ตรวจสอบ
-
-╔══════════════════════════════════════════════════════════════════╗
-║           🟡 PHASE 3: Human Review & Feedback Loop             ║
-╚══════════════════════════════════════════════════════════════════╝
-
-STEP 9: Analyst ตรวจสอบ Playbook ที่ได้
-        → ถูกต้อง: บันทึกเป็น Pre-built Playbook สำหรับ Mode A ในอนาคต
-        → ไม่ถูกต้อง: แก้ไข Context / Prompt → วนซ้ำที่ STEP 3
+    Analyst->>NB: 1. Search Procedure for Threat
+    NB-->>Analyst: 2. Return Procedure Context
+    Analyst->>n8n: 3. Submit Input Form (IOC, Threat, Context)
+    n8n->>n8n: 4. Map MITRE ATT&CK Technique ID
+    alt Mode A (Pre-built)
+        n8n->>Store: 5. Query Playbook by Technique ID
+        Store-->>n8n: 6. Return Playbook
+    else Mode B (Generate)
+        n8n->>LLM: 5. Send Context + Mastertemplate + Prompt
+        LLM-->>n8n: 6. Return Generated Playbook
+    end
+    n8n-->>Analyst: 7. Return Formatted Playbook (Markdown/PDF)
 ```
 
 ---
