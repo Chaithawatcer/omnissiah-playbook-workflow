@@ -1,0 +1,21 @@
+# System files
+Thumbs.db
+desktop.ini
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Temporary/Logs
+*.log
+tmp/
+temp/
+
+# Gemini CLI / Assistant files
+.gemini/
+.agents/
