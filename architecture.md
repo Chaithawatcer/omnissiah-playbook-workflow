@@ -14,18 +14,41 @@
 
 ```mermaid
 graph TD
-    user["Analyst (Human)"] -- "ป้อน IOC หรือ Threat Name" --> input["Input Form (n8n Webhook)"]
+    user["Analyst (Human)"] -- "1. ป้อน IOC/Threat Name + เลือก Flow" --> input["Input Form (n8n Webhook)"]
     input --> mapper["MITRE ATT&CK Mapping Engine"]
-    mapper --> dedup{"Deduplication Check\n(มี Playbook แล้วหรือยัง?)"}
-    dedup -- "มีแล้ว (HIT)" --> prebuilt["Pre-built Playbook Store"]
-    dedup -- "ยังไม่มี (MISS)" --> parse["Parse Mastertemplate\nเป็น Section Slots"]
-    parse --> loop["Per-Section Generation Loop\n(วน query → retrieve → generate\nทีละ section ตาม template)"]
-    mastertemplate["Mastertemplate\n(Static File — ไม่เข้า Vector DB)"] --> parse
-    vdb["Vector DB\n(Phase Procedure Docs)"] --> loop
-    loop --> assemble["ประกอบทุก Section\nกลับเป็น Playbook สมบูรณ์"]
-    assemble --> save["Auto-save to Pre-built Store\n(Index by Technique ID)"]
-    save --> output["Playbook Output (Markdown / PDF)"]
-    prebuilt --> output
+    mapper --> flow_select{"เลือก Flow การทำงาน"}
+    
+    %% Urgent Flow (Fast Path)
+    flow_select -- "A. Urgent Flow (ด่วน)" --> dedup_urg{"Deduplication Check\n(หา Verified หรือ Draft)"}
+    dedup_urg -- "HIT (พบ Playbook)" --> store_fetch_urg["ดึงจาก Playbook Store"]
+    store_fetch_urg --> output_urg["ส่งมอบทันที\n(แปะป้าย Draft หรือ Verified)"]
+    
+    dedup_urg -- "MISS (ไม่มีเลย)" --> parse_urg["Parse Mastertemplate\n(Static File)"]
+    parse_urg --> loop_urg["Per-Section Generation Loop\n(RAG จาก Vector DB + LLM)"]
+    loop_urg --> assemble_urg["Assemble Playbook"]
+    assemble_urg --> save_draft["บันทึกเข้า Store เป็น Draft"]
+    save_draft --> output_urg
+    save_draft --> queue_rev["ส่งงานเข้าคิวรอยืนยัน\n(Pending Review Queue)"]
+
+    %% Standard Flow (Verified Path)
+    flow_select -- "B. Standard Flow (ปกติ)" --> dedup_std{"Deduplication Check\n(หาเฉพาะ Verified)"}
+    dedup_std -- "HIT (พบ Verified)" --> store_fetch_std["ดึงจาก Playbook Store"]
+    store_fetch_std --> output_std["ส่งมอบ Verified Playbook"]
+    
+    dedup_std -- "MISS (ไม่มี/มีแค่ Draft)" --> parse_std["Parse Mastertemplate\n(Static File)"]
+    parse_std --> loop_std["Per-Section Generation Loop\n(RAG จาก Vector DB + LLM)"]
+    loop_std --> assemble_std["Assemble Playbook (Draft)"]
+    assemble_std --> review_gate{"Human Review & Test Gate\n(n8n Form / Human Approve)"}
+    
+    queue_rev --> review_gate
+    
+    review_gate -- "แก้ไข / อนุมัติ" --> save_verified["บันทึกเข้า Store เป็น Verified"]
+    save_verified --> output_std
+    
+    vdb["Vector DB\n(Phase Procedure Docs)"] --> loop_urg
+    vdb --> loop_std
+    mastertemplate["Mastertemplate\n(Static File)"] --> parse_urg
+    mastertemplate --> parse_std
 ```
 
 ---
@@ -82,48 +105,42 @@ graph TD
 
 ### Layer 3 — Decision & Playbook Engine (ชั้นตัดสินใจและสร้าง Playbook)
 
-หัวใจสำคัญของระบบ — ใช้ **Per-Section Generation Loop** ไม่ใช่ Generate ทั้ง Playbook ในรอบเดียว:
+หัวใจสำคัญของระบบ — ควบคุมลำดับการค้นหา การตรวจสอบความซ้ำซ้อนด้วยสถานะ และการใช้ **Per-Section Generation Loop**:
 
 ```mermaid
 graph TD
-    tid["Technique ID(s) จาก Layer 2"]
+    tid["Technique ID(s) จาก Layer 2"] --> flow_select{"เช็คประเภท Flow"}
+    
+    %% Urgent Flow Loop
+    flow_select -- "Urgent Flow" --> query_store_urg["ค้นหาใน Playbook Store"]
+    query_store_urg --> check_urg{"พบ Playbook\n(Verified/Draft)?"}
+    check_urg -- "Yes (HIT)" --> deliver_urg["ดึงไปใช้ทันที\n(ถ้าเป็น Draft จะแปะป้ายเตือน)"]
+    check_urg -- "No (MISS)" --> parse_urg["Parse Mastertemplate\n& Run Loop"]
+    parse_urg --> assemble_urg["Assemble Playbook (Draft)"]
+    assemble_urg --> save_store_urg["บันทึกลง Store เป็น Draft"]
+    save_store_urg --> deliver_urg
+    save_store_urg --> enqueue_review["เข้าคิวรอคนตรวจ (Async)"]
 
-    tid --> dedup{"Deduplication Check\nค้นหาใน Pre-built Store\nด้วย Technique ID"}
-
-    dedup -- "HIT: มี Playbook อยู่แล้ว" --> fetch["ดึง Playbook จาก Store\n(ไม่เรียก LLM ประหยัด Token)"]
-    fetch --> out["Output"]
-
-    dedup -- "MISS: ยังไม่มี Playbook" --> parse["Parse Mastertemplate\nแตกเป็น Section Slots\n(Preparation, Detection, Containment,\nEradication, Recovery, Post-Incident)"]
-
-    parse --> loop["Per-Section Generation Loop"]
-
-    subgraph loop_detail ["Generation Loop (วนทีละ Section)"]
-        q["1. สร้าง Query เฉพาะ Section\n(ใช้ [[fill]] instruction + Technique ID)"]
-        r["2. RAG Retrieve\n(Filter: phase + technique_id)"]
-        g["3. LLM Generate เฉพาะ Section นั้น\n(Context + Slot Instruction + System Prompt)"]
-        q --> r --> g
-    end
-
-    loop --> loop_detail
-    g --> assemble["ประกอบทุก Section\nกลับเข้า Template Structure"]
-    assemble --> save["Auto-save to Pre-built Store\nIndexed by Technique ID"]
-    save --> out
+    %% Standard Flow Loop
+    flow_select -- "Standard Flow" --> query_store_std["ค้นหาใน Playbook Store"]
+    query_store_std --> check_std{"พบ Verified Playbook?"}
+    check_std -- "Yes (HIT)" --> deliver_std["ดึง Verified ไปใช้ทันที"]
+    check_std -- "No (MISS/Draft Only)" --> parse_std["Parse Mastertemplate\n& Run Loop"]
+    parse_std --> assemble_std["Assemble Playbook (Draft)"]
+    assemble_std --> review_gate{"Human Review Gate\n(n8n Form / Edit & Approved)"}
+    review_gate --> save_store_std["บันทึกลง Store เป็น Verified"]
+    save_store_std --> deliver_std
 ```
 
-> [!IMPORTANT]
-> **ทำไมต้อง Generate ทีละ Section (Per-Section Loop)?**
->
-> Naive RAG (retrieve รอบเดียว → generate ทั้ง Playbook รวด) มีปัญหา 3 จุด:
-> 1. **Template โดนสับเป็นเศษ** — ถ้ายัด template เข้า vector DB มันจะถูก chunking จนเสียโครงสร้าง
-> 2. **Top-k รอบเดียวครอบไม่ทั่ว** — chunk ของ phase ที่ relevant สูงจะเบียด phase อื่นจนหาย
-> 3. **คุม output ตามรูป template ไม่ได้** — LLM จะเขียนตามใจตัวเอง ไม่ตรงตามโครงสร้างที่ต้องการ
->
-> พอแยกเป็น **loop ต่อ section + filter ด้วย metadata** ทั้งสามปัญหานี้หายหมด
+**กฎการตัดสินใจของ Deduplication Engine:**
 
-**กฎการ Deduplication:**
-- ระบบ Match ด้วย **Technique ID** เป็นหลัก
-- หากมี Playbook ที่ใช้ Technique ID เดียวกันอยู่แล้ว → ถือว่าซ้ำ → ส่งอันเก่าออกทันที
-- หากไม่ซ้ำ → Generate ใหม่ → บันทึกลง Store
+- **Urgent Flow (เน้นความเร็วสูงสุด):**
+  1. ค้นหา `Verified Playbook` ด้วย Technique ID ใน Store -> หากเจอให้ส่งมอบทันที
+  2. หากไม่เจอ `Verified` แต่เจอ `Draft Playbook` -> ดึง `Draft` มาส่งมอบทันที โดยเพิ่มแบนเนอร์แจ้งเตือนเด่นชัด: `⚠️ [DRAFT - UNVERIFIED PLAYBOOK]` เพื่อแจ้งผู้ใช้ยอมรับความเสี่ยง
+  3. หากไม่พบเลย -> สร้างใหม่เป็น `Draft` -> ส่งมอบ -> บันทึกเข้าระบบเป็น `Draft` -> ส่งงานเข้าคิวรอยืนยัน (Queue) เพื่อตรวจภายหลัง
+- **Standard Flow (เน้นความปลอดภัยและถูกต้อง):**
+  1. ค้นหา `Verified Playbook` ด้วย Technique ID ใน Store -> หากเจอให้ส่งมอบทันที
+  2. หากไม่พบ หรือพบแค่ `Draft` -> เข้าสู่ขั้นตอน Generate ใหม่ -> ส่งมอบให้คนตรวจสอบแก้ไขผ่าน Portal (n8n Form) -> บันทึกผลลัพธ์เป็น `Verified` เสมอ
 
 ---
 
@@ -196,21 +213,36 @@ Phase 5 — Post-Incident:
 
 ### Layer 4 — n8n Workflow Orchestration (ชั้นควบคุม Workflow)
 
+n8n จะเป็นตัวแยกการทำงาน (Switch Node) และเก็บสถานะงานรอรีวิวด้วย Waiting Node:
+
 ```mermaid
 graph TD
-    A["Webhook Node\n(รับ Input จาก User)"]
+    A["Webhook Node\n(รับ Input + ระบุโหมด Urgent/Standard)"]
     B["MITRE Mapping Node\n(Python Script)"]
-    C{"Deduplication Check Node\n(Query Pre-built Store)"}
-    D["Template Parser Node\n(แตก Mastertemplate เป็น Slots)"]
-    E["Per-Section Loop Node\n(วน RAG + LLM ทีละ Section)"]
-    F["Assembly Node\n(ประกอบ Sections กลับเป็น Playbook)"]
-    G["Auto-save Node\n(Write to Pre-built Store)"]
-    H["Format Output Node\n(Markdown / PDF)"]
-    I["Response Node\n(ส่ง Playbook กลับให้ User)"]
+    C{"Check Flow Mode"}
+    
+    %% Urgent Path in n8n
+    C -- "Urgent" --> D_urg["Deduplication Node\n(Query Verified & Draft)"]
+    D_urg -- "HIT" --> H_urg["Deliver Node (ส่งเมล์/Slack)"]
+    D_urg -- "MISS" --> E_urg["Template Parser Node"]
+    E_urg --> F_urg["Per-Section Loop Node\n(LLM & RAG)"]
+    F_urg --> G_urg["Assembly Node"]
+    G_urg --> S_urg["Save Store Node\n(สถานะ = Draft)"]
+    S_urg --> H_urg
+    S_urg --> Q_urg["Enqueue Review Node\n(ส่งลิงก์ Form รอตรวจ)"]
 
+    %% Standard Path in n8n
+    C -- "Standard" --> D_std["Deduplication Node\n(Query Verified เท่านั้น)"]
+    D_std -- "HIT" --> H_std["Deliver Node"]
+    D_std -- "MISS" --> E_std["Template Parser Node"]
+    E_std --> F_std["Per-Section Loop Node\n(LLM & RAG)"]
+    F_std --> G_std["Assembly Node (Draft)"]
+    G_std --> W_std["n8n Form Node / Wait Link\n(หยุดรอนักวิเคราะห์เข้ามารีวิว/แก้ไข)"]
+    W_std --> S_std["Save Store Node\n(สถานะ = Verified)"]
+    S_std --> H_std
+    
+    Q_urg --> W_std
     A --> B --> C
-    C -- "HIT" --> H
-    C -- "MISS" --> D --> E --> F --> G --> H --> I
 ```
 
 ---
@@ -230,13 +262,14 @@ graph TD
         subgraph static ["Static Files (ไม่เข้า Vector DB)"]
             master["📄 Mastertemplate\n(โครงร่างมาตรฐานของ Playbook)\nส่งตรงเข้า LLM Prompt"]
         end
-        subgraph store ["Pre-built Playbook Store"]
-            pb["Validated Playbooks\n(Index: Technique ID → Playbook File)\nFormat: Markdown / JSON / PDF\nStorage: Local / Google Drive / DB"]
+        subgraph store ["Pre-built Playbook Store (SQL / File DB)"]
+            verified["✅ Verified Playbooks\n(reviewed_by: Human,\nstatus: 'Verified')"]
+            drafts["📝 Draft Playbooks\n(reviewed_by: None,\nstatus: 'Draft')"]
         end
     end
     vdb -- "RAG Retrieval\n(Filter by phase + technique)" --> engine["Playbook Engine (Layer 3)"]
     static -- "Direct Injection\n(ส่งตรงเป็นส่วนของ Prompt)" --> engine
-    engine -- "Auto-save (Non-duplicate)" --> store
+    engine -- "Save as Draft / Verified" --> store
 ```
 
 **กลยุทธ์การจัดเก็บเอกสาร (Document Strategy — 6 Docs Total):**
@@ -252,6 +285,15 @@ graph TD
 > ทำให้ Playbook ที่ Generate ออกมามีโครงสร้างไม่สมบูรณ์ (Template "ระเบิด")
 > จึงต้องส่ง Mastertemplate เข้า LLM แบบตรงๆ ผ่าน System Prompt เพื่อรักษาโครงสร้างเอกสาร
 
+**การเก็บสถานะใน Pre-built Playbook Store:**
+- Playbook ทุกไฟล์ที่ถูกเก็บจะมี Metadata ประกอบด้วย:
+  - `playbook_id`: รหัสเอกสาร (เช่น PB-1002)
+  - `technique_id`: MITRE Technique ID
+  - `status`: `Draft` หรือ `Verified` หรือ `Deprecated`
+  - `created_at`: วันที่สร้าง
+  - `verified_at`: วันที่ผ่านการตรวจสอบโดยคน (เว้นว่างหากสถานะเป็น Draft)
+  - `verified_by`: ชื่อของนักวิเคราะห์ผู้รีวิว
+
 **Chunking Strategy สำหรับ Phase Procedure Docs:**
 
 | หัวข้อ | รายละเอียด |
@@ -264,8 +306,38 @@ graph TD
 **Technique Labels (Metadata) บน Phase Docs:**
 - แต่ละ Phase Document จะมี Metadata ระบุ Technique IDs ที่เกี่ยวข้อง
 - เมื่อ RAG Engine ค้นหา จะใช้ Technique ID จาก Layer 2 เป็นตัว Filter
-- ตัวอย่าง: ถ้าได้ `T1566` (Phishing) → ดึงเฉพาะ Phase Docs ที่ Label ว่ารองรับ `T1566`
 - ช่วยลด Noise ได้มาก เพราะไม่ดึง Phase Docs ที่ไม่เกี่ยวข้องกับ Technique นั้นมาใส่ Context
+
+---
+
+## 🔄 Playbook Development Lifecycle (PDLC)
+
+เพื่อแก้ไขปัญหา "สร้างเสร็จแล้วปล่อยลืม" (Generate & Forget) และรักษาความน่าเชื่อถือของเนื้อหาที่เป็นขั้นตอนปฏิบัติจริง ระบบจึงนำหลักการวงจรชีวิตของ Playbook มาบังคับใช้ โดยมีกระบวนการและสถานะการเปลี่ยนผ่านดังนี้:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Draft : AI Generated (MISS)
+    Draft --> Verified : Human Verification & Test Gate (Approved)
+    Draft --> Deprecated : Cancelled / Unused
+    Verified --> Deprecated : Tactic Outdated / Overwritten
+    Deprecated --> [*]
+```
+
+### 1. สถานะเอกสาร (Playbook States)
+- **Draft (ฉบับร่าง):** Playbook ที่พึ่งถูกสร้างขึ้นจาก AI ยังไม่ผ่านการตรวจสอบ/ทดสอบจริงโดยคน มีความเสี่ยงที่เนื้อหาบางอย่างอาจไม่ตรงกับระบบภายในขององค์กร หรืออาจมีหลอน (Hallucination) เล็กน้อย
+- **Verified (ฉบับผ่านการตรวจสอบ):** Playbook ที่ได้รับการทดสอบและรับรองความถูกต้องโดยมนุษย์ (Security Analyst) เรียบร้อยแล้ว ถือว่าเป็นเอกสารที่น่าเชื่อถือ ใช้งานในระบบผลิตจริงได้อย่างปลอดภัย
+- **Deprecated (ฉบับยกเลิกใช้งาน):** Playbook ที่หมดอายุหรือถูกแทนที่ด้วยวิธีรับมือที่ดีกว่า เพื่อไม่ให้คนหยิบไปใช้ซ้ำ
+
+### 2. วงจรการพัฒนาระหว่าง 2 Flows
+- **Urgent Flow (Fast Path):**
+  - เน้นบริการผู้ใช้ทันทีเมื่อมีเคสระดับวิกฤตเกิดขึ้น
+  - ผลลัพธ์ที่ส่งมอบให้ผู้ใช้จะถูกทำเครื่องหมายตัวใหญ่ชัดเจนว่าเป็น **Draft (Unverified)**
+  - ในเบื้องหลัง ระบบจะส่งคำขอตรวจสอบเข้าคิว **Pending Review Queue** โดยอัตโนมัติเพื่อให้คนมารีวิวภายหลัง
+- **Standard Flow (Verified Path):**
+  - เป็นวงจรมาตรฐานในการสร้าง Playbook ต้นแบบเก็บสะสมไว้ใน Store
+  - AI จะรัน RAG และ LLM เป็นด่านแรกเพื่อสร้างโครงร่าง
+  - จากนั้นจะหยุดรอ (Wait) ที่ **Human Verification Gate** (ส่ง Form ไปให้นักวิเคราะห์แก้ไขและรีวิวผ่านเว็บฟอร์ม)
+  - หลังจากคนคลิกตรวจสอบและกดยืนยัน (Approve) เท่านั้น เอกสารจึงจะได้รับการบันทึกเป็นสถานะ `Verified`
 
 ---
 
@@ -366,7 +438,9 @@ Generated Output = Containment section ที่เฉพาะกับ T1190
 
 ---
 
-## Data Flow แบบ Step-by-Step (Fully Automated)
+## Data Flow แบบ Step-by-Step (Urgent vs Standard Mode)
+
+### A. Urgent Flow (Fast Path)
 
 ```mermaid
 sequenceDiagram
@@ -374,55 +448,99 @@ sequenceDiagram
     actor Analyst
     participant n8n as n8n Workflow
     participant MITRE as MITRE ATT&CK Mapper
-    participant Store as Pre-built Playbook Store
-    participant Parser as Template Parser
+    participant Store as Playbook Store
     participant VDB as Vector Database (RAG)
     participant LLM as LLM API
 
-    Analyst->>n8n: Submit Input (IOC or Threat Name)
+    Analyst->>n8n: Submit Input (Urgent Flow requested)
     n8n->>MITRE: Map Input to Technique ID(s)
-    MITRE-->>n8n: Return Technique ID List [T1190, T1059, ...]
-    n8n->>Store: Deduplication Check (Query by Technique ID)
-
+    MITRE-->>n8n: Return Technique ID List [T1190, T1059]
+    n8n->>Store: Check Deduplication (Query Verified or Draft)
+    
     alt HIT: Playbook already exists
-        Store-->>n8n: Return existing Playbook
-        n8n-->>Analyst: Deliver Playbook instantly
-    else MISS: No existing Playbook found
-        n8n->>Parser: Parse Mastertemplate into Section Slots
-        Parser-->>n8n: Return Slot List with [[fill]] + [[source]]
-
-        loop For each Section Slot
-            n8n->>VDB: RAG Query (Filter: phase + technique_ids)
-            VDB-->>n8n: Return Relevant Chunks
-            n8n->>LLM: Generate Section (Chunks + [[fill]] instruction)
-            LLM-->>n8n: Return Generated Section
+        Store-->>n8n: Return Playbook (Verified or Draft)
+        n8n-->>Analyst: Deliver Playbook immediately (with status flag)
+    else MISS: No Playbook found
+        n8n->>n8n: Parse Mastertemplate & Start Loop
+        loop For each Section
+            n8n->>VDB: Query (Filter: phase + technique)
+            VDB-->>n8n: Return Chunks
+            n8n->>LLM: Generate Section (Chunks + instruction)
+            LLM-->>n8n: Return Section Content
         end
-
         n8n->>n8n: Assemble all Sections into Playbook
-        n8n->>Store: Auto-save Playbook (Index by Technique ID)
-        n8n-->>Analyst: Deliver Generated Playbook
+        n8n->>Store: Auto-save Playbook as 'Draft'
+        n8n-->>Analyst: Deliver Playbook immediately (Labeled: DRAFT)
+        n8n->>n8n: Send to Pending Review Queue (for future verification)
+    end
+```
+
+### B. Standard Flow (Human-Verified Path)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Analyst
+    actor Reviewer as SOC Team (Human Reviewer)
+    participant n8n as n8n Workflow
+    participant Store as Playbook Store
+    participant VDB as Vector Database (RAG)
+    participant LLM as LLM API
+
+    Analyst->>n8n: Submit Input (Standard Flow requested)
+    n8n->>Store: Check Deduplication (Query Verified only)
+    
+    alt HIT: Verified Playbook exists
+        Store-->>n8n: Return Verified Playbook
+        n8n-->>Analyst: Deliver Verified Playbook immediately
+    else MISS: No Verified Playbook exists (or only Draft exists)
+        n8n->>n8n: Parse Mastertemplate & Start Loop
+        loop For each Section
+            n8n->>VDB: Query (Filter: phase + technique)
+            VDB-->>n8n: Return Chunks
+            n8n->>LLM: Generate Section (Chunks + instruction)
+            LLM-->>n8n: Return Section Content
+        end
+        n8n->>n8n: Assemble all Sections into Draft Playbook
+        n8n->>Reviewer: Send Review Notification (with Web Form link)
+        Note over Reviewer, n8n: n8n Workflow enters WAITING state
+        Reviewer->>n8n: Review, edit content, and click 'Approve' via Form
+        n8n->>Store: Save Playbook as 'Verified'
+        n8n-->>Analyst: Deliver Verified Playbook
     end
 ```
 
 ---
 
-## กระบวนการ Self-Growing Store (การเติบโตของ Pre-built Store)
+## กระบวนการ Self-Growing Store (การเติบโตของ Playbook Store)
 
 ```mermaid
-graph LR
-    A["Threat 1 เข้ามา\n(MISS → Loop Generate → Auto-save)"] --> store["Pre-built Playbook Store\n(เริ่มต้นว่างเปล่า)"]
-    B["Threat 2 เข้ามา (แบบใหม่)\n(MISS → Loop Generate → Auto-save)"] --> store
-    C["Threat 1 เข้ามาซ้ำ\n(HIT → ดึงทันที ไม่เรียก LLM)"] -- "ดึงจาก Store" --> store
-    D["Threat 3 เข้ามา (แบบใหม่)\n(MISS → Loop Generate → Auto-save)"] --> store
-    store -- "โตขึ้นเรื่อยๆ อัตโนมัติ" --> bigstore["Pre-built Store\nครบถ้วนมากขึ้นเรื่อยๆ"]
+graph TD
+    A["Threat A เข้ามา (ด่วน / Urgent)"] --> MISS_urg{"ตรวจ Store (MISS)"}
+    MISS_urg --> Gen_urg["AI Gen + Delivery"]
+    Gen_urg --> Save_Draft["บันทึกเข้า Store เป็น Draft"]
+    
+    Save_Draft --> StoreDB["Playbook Store DB"]
+    
+    B["Threat B เข้ามา (ปกติ / Standard)"] --> MISS_std{"ตรวจ Store (MISS)"}
+    MISS_std --> Gen_std["AI Gen + Review Wait"]
+    Gen_std --> Review_Gate["Human Review (n8n Form)"]
+    Review_Gate --> Save_Ver["บันทึกเข้า Store เป็น Verified"]
+    Save_Ver --> StoreDB
+    
+    %% Transition of Draft to Verified
+    StoreDB -- "หยิบฉบับ Draft ใน Store ไปสกรีนทีหลัง" --> Review_Gate
+    
+    C["Threat เข้ามาซ้ำ (มีใน Store แล้ว)"] --> HIT{"ตรวจ Store (HIT)"}
+    HIT -- "เจอ Verified" --> Deliver_Ver["ส่งมอบ Verified ทันที\n(ความปลอดภัยสูงสุด)"]
+    HIT -- "เจอแต่ Draft (โหมด Urgent)" --> Deliver_Drf["ส่งมอบ Draft ทันที\n(แปะป้ายระวัง)"]
 ```
 
 > [!TIP]
-> **คุม Reproducibility ด้วย:**
-> - ตั้ง LLM temperature ต่ำ (0.1–0.3)
-> - ใช้ template เข้มๆ กำหนดโครงสร้าง output
-> - Cache ผลที่ผ่าน review แล้ว + Version Control
-> - SOC ต้องการผลซ้ำได้และ trace ได้ — LLM ธรรมชาติให้ output ไม่เหมือนเดิมทุกครั้ง ต้องตั้งใจคุม
+> **คุม Reproducibility และคุณภาพด้วย:**
+> - ตั้ง LLM temperature ต่ำ (0.1–0.3) เพื่อความเสถียรของเนื้อหา
+> - ใช้ Mastertemplate กำหนดกรอบของผลลัพธ์ไม่ให้หลุดขอบเขต
+> - การนำระบบตรวจสอบคุณภาพโดยคนมาประยุกต์ใช้ (Human Review) จะทำให้ความถูกต้องของคลังความรู้สูงขึ้นอย่างเป็นระบบ
 
 ---
 
