@@ -18,8 +18,9 @@ graph TD
     input --> mapper["MITRE ATT&CK Mapping Engine"]
     mapper --> dedup{"Deduplication Check\n(มี Playbook แล้วหรือยัง?)"}
     dedup -- "มีแล้ว (HIT)" --> prebuilt["Pre-built Playbook Store"]
-    dedup -- "ยังไม่มี (MISS)" --> rag["RAG Engine\n(Vector DB Search)"]
+    dedup -- "ยังไม่มี (MISS)" --> rag["RAG Engine\n(Vector DB Search)\nFilter by Technique Labels"]
     rag --> llm["LLM (Gemini / OpenAI)\nGenerate Playbook"]
+    mastertemplate["Mastertemplate\n(Static File — ไม่เข้า Vector DB)"] --> llm
     llm --> save["Auto-save to Pre-built Store\n(Index by Technique ID)"]
     save --> output["Playbook Output (Markdown / PDF)"]
     prebuilt --> output
@@ -77,9 +78,9 @@ graph TD
     dedup -- "HIT: มี Playbook อยู่แล้ว" --> fetch["ดึง Playbook จาก Store\n(ไม่เรียก LLM ประหยัด Token)"]
     fetch --> out["Output"]
 
-    dedup -- "MISS: ยังไม่มี Playbook" --> rag["RAG Engine\nค้นหา Context ที่เกี่ยวข้อง\nจาก Vector Database"]
-    rag --> ctx["Context ที่ได้:\n- Procedures (Preparation, Identify,\n  Containment, Eradication)\n- MITRE ATT&CK Details"]
-    ctx --> llm["LLM Node\nนำ Context + Mastertemplate\n+ System Prompt → Generate Playbook"]
+    dedup -- "MISS: ยังไม่มี Playbook" --> rag["RAG Engine\nค้นหา Phase Procedures ที่เกี่ยวข้อง\nจาก Vector DB (Filter by Technique Labels)"]
+    rag --> ctx["Context ที่ได้:\n- Phase Procedures ที่ตรงกับ Technique\n  (Filtered by Technique Labels)"]
+    ctx --> llm["LLM Node\nนำ Context + Mastertemplate (Static File)\n+ System Prompt → Generate Playbook"]
     llm --> save["Auto-save to Pre-built Store\nIndexed by Technique ID"]
     save --> out
 ```
@@ -117,22 +118,42 @@ graph TD
 graph TD
     subgraph Storage ["Data & Storage Layer"]
         subgraph vdb ["Vector Database (ChromaDB / Qdrant)"]
-            proc["Procedure Documents\n(Preparation, Identify, Containment,\nEradication Phase Docs)"]
-            mitre["MITRE ATT&CK Reference Docs"]
-            master["Mastertemplate\n(โครงร่างมาตรฐานของ Playbook)"]
+            p1["📘 Preparation Phase Doc\nLabels: Technique IDs"]
+            p2["📘 Identification & Analysis Phase Doc\nLabels: Technique IDs"]
+            p3["📘 Containment Phase Doc\nLabels: Technique IDs"]
+            p4["📘 Eradication Phase Doc\nLabels: Technique IDs"]
+            p5["📘 Recovery Phase Doc\nLabels: Technique IDs"]
+        end
+        subgraph static ["Static Files (ไม่เข้า Vector DB)"]
+            master["📄 Mastertemplate\n(โครงร่างมาตรฐานของ Playbook)\nส่งตรงเข้า LLM Prompt"]
         end
         subgraph store ["Pre-built Playbook Store"]
             pb["Validated Playbooks\n(Index: Technique ID → Playbook File)\nFormat: Markdown / JSON / PDF\nStorage: Local / Google Drive / DB"]
         end
     end
-    vdb -- "RAG Retrieval" --> engine["Playbook Engine (Layer 3)"]
+    vdb -- "RAG Retrieval\n(Filter by Technique Labels)" --> engine["Playbook Engine (Layer 3)"]
+    static -- "Direct Injection\n(ส่งตรงเป็นส่วนของ Prompt)" --> engine
     engine -- "Auto-save (Non-duplicate)" --> store
 ```
 
-**การแบ่งข้อมูลใน Vector DB:**
-- **Collection 1:** Procedure Documents แยกตาม Phase (Preparation, Identify & Analysis, Containment, Eradication)
-- **Collection 2:** MITRE ATT&CK Technique Descriptions
-- **Collection 3:** Mastertemplate เอกสารโครงร่าง
+**กลยุทธ์การจัดเก็บเอกสาร (Document Strategy — 6 Docs Total):**
+
+| เอกสาร | จำนวน | ที่จัดเก็บ | เหตุผล |
+|--------|--------|-----------|--------|
+| **Mastertemplate** | 1 ไฟล์ | Static File (ส่งตรงใน LLM Prompt) | ป้องกัน Template "ระเบิด" จาก Chunking |
+| **Phase Procedure Docs** | 5 ไฟล์ | Vector Database (with Technique Labels) | ค้นหาด้วย Semantic Search + Filter by Technique ID |
+
+> [!IMPORTANT]
+> **ทำไม Mastertemplate ต้องไม่เข้า Vector DB?**
+> เพราะ Vector DB จะทำ Chunking (ตัดเอกสารเป็นท่อนเล็กๆ) ซึ่งจะทำลายโครงสร้าง Template
+> ทำให้ Playbook ที่ Generate ออกมามีโครงสร้างไม่สมบูรณ์ (Template "ระเบิด")
+> จึงต้องส่ง Mastertemplate เข้า LLM แบบตรงๆ ผ่าน System Prompt เพื่อรักษาโครงสร้างเอกสาร
+
+**Technique Labels (Metadata) บน Phase Docs:**
+- แต่ละ Phase Document จะมี Metadata ระบุ Technique IDs ที่เกี่ยวข้อง
+- เมื่อ RAG Engine ค้นหา จะใช้ Technique ID จาก Layer 2 เป็นตัว Filter
+- ตัวอย่าง: ถ้าได้ `T1566` (Phishing) → ดึงเฉพาะ Phase Docs ที่ Label ว่ารองรับ `T1566`
+- ช่วยลด Noise ได้มาก เพราะไม่ดึง Phase Docs ที่ไม่เกี่ยวข้องกับ Technique นั้นมาใส่ Context
 
 ---
 
@@ -211,9 +232,9 @@ sequenceDiagram
         Store-->>n8n: Return existing Playbook
         n8n-->>Analyst: Deliver Playbook instantly
     else MISS: No existing Playbook found
-        n8n->>VDB: RAG Query (Retrieve relevant Procedures)
-        VDB-->>n8n: Return Context (Phase Docs + MITRE Details)
-        n8n->>LLM: Send Context + Mastertemplate + System Prompt
+        n8n->>VDB: RAG Query (Filter by Technique Labels)
+        VDB-->>n8n: Return Phase Procedures (Filtered by Labels)
+        n8n->>LLM: Send Context + Mastertemplate (Static File) + System Prompt
         LLM-->>n8n: Return Generated Playbook
         n8n->>Store: Auto-save Playbook (Index by Technique ID)
         n8n-->>Analyst: Deliver Generated Playbook
