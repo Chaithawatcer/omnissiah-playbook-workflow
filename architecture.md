@@ -349,23 +349,23 @@ stateDiagram-v2
 sequenceDiagram
     autonumber
     participant Template as Mastertemplate Parser
-    participant Loop as Generation Loop
+    participant GenLoop as Generation Loop
     participant VDB as Vector DB
     participant LLM as LLM API
 
-    Template->>Loop: แตก Template เป็น N Sections (Slots)
+    Template->>GenLoop: แตก Template เป็น N Sections (Slots)
 
     loop สำหรับแต่ละ Section (Phase)
-        Loop->>Loop: 1. สร้าง Query เฉพาะ Section<br/>(ใช้ [[fill]] + Technique ID)
-        Loop->>VDB: 2. RAG Retrieve<br/>(Filter: phase=section_name, technique=ids)
-        VDB-->>Loop: Return Chunks ที่ตรง Phase + Technique
-        Loop->>LLM: 3. Generate Section<br/>(Slot Instruction + Retrieved Chunks + Context)
-        LLM-->>Loop: Return Generated Section Content
-        Loop->>Loop: 4. เก็บผลลัพธ์ของ Section นี้
+        GenLoop->>GenLoop: 1. สร้าง Query เฉพาะ Section<br/>(ใช้ [[fill]] + Technique ID)
+        GenLoop->>VDB: 2. RAG Retrieve<br/>(Filter: phase=section_name, technique=ids)
+        VDB-->>GenLoop: Return Chunks ที่ตรง Phase + Technique
+        GenLoop->>LLM: 3. Generate Section<br/>(Slot Instruction + Retrieved Chunks + Context)
+        LLM-->>GenLoop: Return Generated Section Content
+        GenLoop->>GenLoop: 4. เก็บผลลัพธ์ของ Section นี้
     end
 
-    Loop->>Template: 5. ประกอบทุก Section กลับเข้า Template Structure
-    Template-->>Loop: Playbook สมบูรณ์
+    GenLoop->>Template: 5. ประกอบทุก Section กลับเข้า Template Structure
+    Template-->>GenLoop: Playbook สมบูรณ์
 ```
 
 **ตัวอย่าง 1 รอบของ Loop (Section: Containment):**
