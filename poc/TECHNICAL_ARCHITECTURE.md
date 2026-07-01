@@ -1,61 +1,61 @@
-# ⚙️ Technical Architecture: Omnissiah RAG PoC
+# ⚙️ สถาปัตยกรรมระบบ (Technical Architecture): Omnissiah RAG PoC
 
-This document provides a deep-dive technical overview of the Omnissiah Incident Response (IR) Playbook Generator. It is designed for engineers, SOC analysts, and AI agents who need to understand, maintain, or extend this Proof of Concept (PoC).
-
----
-
-## 🏗️ System Architecture
-
-The system implements a **Retrieval-Augmented Generation (RAG)** pipeline specifically tailored for Incident Response documentation. It bridges static, pre-approved IR procedures (Knowledge Base) with a Generative LLM to dynamically construct threat-specific playbooks.
-
-### Core Components
-1. **Knowledge Base (Markdown)**: 15 modularized IR playbooks acting as ground truth.
-2. **Vector Database (ChromaDB)**: Stores document embeddings and metadata for semantic and exact-match retrieval.
-3. **Generative Model (Google Gemini)**: Processes retrieved context and structured prompts to generate Markdown tables (`gemini-flash-lite-latest` is used to optimize for speed and Free Tier rate limits).
+เอกสารนี้อธิบายเจาะลึกถึงสถาปัตยกรรมทางเทคนิคของระบบสร้าง Incident Response (IR) Playbook อัตโนมัติ (Omnissiah) ถูกเขียนขึ้นสำหรับ Engineer, SOC Analyst และ AI Agent เพื่อใช้ในการทำความเข้าใจ บำรุงรักษา หรือต่อยอด Proof of Concept (PoC) นี้
 
 ---
 
-## 🔄 Data Pipeline & Workflow
+## 🏗️ ภาพรวมสถาปัตยกรรม (System Architecture)
 
-### 1. Data Ingestion (`01_ingest.py`)
-- **Input**: Raw `.md` files in `playbooks/`.
-- **Parsing**: The script uses Regular Expressions (`re`) to extract YAML frontmatter (`threat_name`, `technique_ids`, `severity`).
-- **Chunking**: The document is split by Markdown headers (`## Phase: ...` and `### Sub: ...`). Each chunk represents a specific phase (e.g., `preparation`, `detection`) and sub-process.
-- **Embedding**: Uses ChromaDB's `DefaultEmbeddingFunction` (all-MiniLM-L6-v2) to convert text chunks into vector embeddings.
-- **Storage**: Chunks are stored in the `omnissiah_procedures` collection. Crucially, metadata (`phase` and `technique_ids` as a stringized list) is attached to each chunk.
+ระบบนี้ใช้ไปป์ไลน์ **Retrieval-Augmented Generation (RAG)** ที่ออกแบบมาเพื่องานด้านเอกสาร Incident Response โดยเฉพาะ เป็นการเชื่อมต่อระหว่างคู่มือ IR มาตรฐาน (Knowledge Base) กับ Generative LLM เพื่อสร้าง Playbook แบบเจาะจงภัยคุกคามโดยอัตโนมัติ
 
-### 2. Retrieval & Context Injection (`02_generate.py`)
-- **Input**: User executes the script with a target threat, e.g., `python 02_generate.py --threat "WannaCry"`.
-- **Mapping**: The script looks up `technique_mapping.json` to find the exact MITRE ATT&CK Technique IDs associated with the threat (e.g., WannaCry -> T1486, T1190, T1021.002).
-- **Hybrid Retrieval Strategy**: 
-  - *Vector Search + Metadata Pre-filtering*: Queries ChromaDB with a semantic string (e.g., "WannaCry preparation incident response procedure") while enforcing a strict metadata filter: `{"phase": {"$eq": "preparation"}}`.
-  - *Python-side Post-filtering*: Because ChromaDB's native `$contains` on arrays can be complex, the script fetches up to 30 candidates and iterates through them in Python. It strictly filters for chunks where `any(tech_id in metadata['technique_ids'] for tech_id in target_technique_ids)`.
-  - *Fallback Mechanism*: If no technique ID matches exactly, it falls back to semantic similarity based solely on the `phase`.
+### องค์ประกอบหลัก (Core Components)
+1. **Knowledge Base (Markdown)**: ไฟล์ Playbook ต้นฉบับ 15 เล่มที่ทำหน้าที่เป็นแหล่งข้อมูลที่ถูกต้อง (Ground Truth)
+2. **Vector Database (ChromaDB)**: ฐานข้อมูลสำหรับเก็บ Document Embeddings และ Metadata เพื่อการค้นหาด้วยความหมาย (Semantic Search) และการกรองที่แม่นยำ (Exact-match)
+3. **Generative Model (Google Gemini)**: ประมวลผลบริบทที่ค้นพบร่วมกับ Prompt ที่ถูกจัดโครงสร้างมาอย่างดี เพื่อสร้างตาราง Markdown (ใช้โมเดล `gemini-flash-lite-latest` เพื่อความรวดเร็วและรองรับข้อจำกัดของ Free Tier)
 
-### 3. Generation & Formatting (`02_generate.py`)
-- **Prompt Engineering**: The script loops through 5 predefined templates (`TEMPLATE_SECTIONS`). It injects the retrieved context into a rigid prompt.
-- **Output Constraints**: The prompt explicitly instructs the LLM:
+---
+
+## 🔄 การไหลของข้อมูล (Data Pipeline & Workflow)
+
+### 1. การนำเข้าข้อมูล `01_ingest.py` (Data Ingestion)
+- **Input**: ไฟล์ดิบ `.md` ในโฟลเดอร์ `playbooks/`
+- **การแยกวิเคราะห์ (Parsing)**: สคริปต์ใช้ Regular Expressions (`re`) เพื่อดึงข้อมูล YAML Frontmatter (ได้แก่ `threat_name`, `technique_ids`, `severity`)
+- **การตัดแบ่ง (Chunking)**: เอกสารจะถูกตัดแบ่งตามหัวข้อ Markdown (`## Phase: ...` และ `### Sub: ...`) แต่ละ Chunk จะแทน Phase หรือกระบวนการย่อยๆ (เช่น `preparation`, `detection`)
+- **การทำ Embedding**: ใช้ `DefaultEmbeddingFunction` ของ ChromaDB (all-MiniLM-L6-v2) ในการแปลงข้อความ Chunk เป็น Vector Embeddings
+- **การจัดเก็บ (Storage)**: Chunks จะถูกเก็บใน Collection ชื่อ `omnissiah_procedures` ที่สำคัญคือจะมีการแนบ Metadata (`phase` และ `technique_ids` แบบ String) เข้าไปในแต่ละ Chunk ด้วย
+
+### 2. การดึงข้อมูลและเตรียมบริบท `02_generate.py` (Retrieval & Context Injection)
+- **Input**: ผู้ใช้งานรันคำสั่งโดยระบุภัยคุกคามเป้าหมาย เช่น `python 02_generate.py --threat "WannaCry"`
+- **การทำ Mapping**: สคริปต์จะค้นหาใน `technique_mapping.json` เพื่อหา MITRE ATT&CK Technique IDs ที่ตรงกับภัยคุกคามนั้น (เช่น WannaCry -> T1486, T1190, T1021.002)
+- **กลยุทธ์การค้นหาแบบลูกผสม (Hybrid Retrieval Strategy)**: 
+  - *Vector Search + Metadata Pre-filtering*: ค้นหาใน ChromaDB ด้วยข้อความ (เช่น "WannaCry preparation incident response procedure") และบังคับกรอง Metadata ขั้นแรก: `{"phase": {"$eq": "preparation"}}`
+  - *Python-side Post-filtering*: เนื่องจากข้อจำกัดของฟังก์ชัน `$contains` ในอาเรย์ของ ChromaDB สคริปต์จึงดึงข้อมูลเบื้องต้นมา 30 รายการ แล้วนำมากรองซ้ำในระดับ Python โดยเช็คว่า `any(tech_id in metadata['technique_ids'] for tech_id in target_technique_ids)`
+  - *ระบบสำรอง (Fallback)*: หากไม่มี technique ID ตรงกันเลย ระบบจะเปลี่ยนไปค้นหาโดยอิงจากความหมาย (Semantic) ของ `phase` เพียงอย่างเดียว
+
+### 3. การสร้างและจัดรูปแบบผลลัพธ์ `02_generate.py` (Generation & Formatting)
+- **Prompt Engineering**: สคริปต์จะวนลูปตามเทมเพลต 5 ขั้นตอน (`TEMPLATE_SECTIONS`) และแทรกข้อมูล Context ที่ค้นพบเข้าไปใน Prompt ที่กำหนดไว้อย่างตายตัว
+- **การจำกัดรูปแบบผลลัพธ์ (Output Constraints)**: Prompt จะสั่ง LLM อย่างเด็ดขาดว่า:
   > *"ห้ามเกริ่นนำ ห้ามมีคำทักทาย ห้ามมีสรุปปิดท้าย ห้ามพูดคุยโต้ตอบ... ให้ตอบเฉพาะตารางและข้อมูลในรูปแบบเอกสารทางการเท่านั้น"* 
-  This forces the LLM to output a strict 2-column Markdown table (`| ขั้นตอน | กระบวนการ |`) suitable for executive and L1 analyst consumption.
-- **Rate Limit Handling**: To bypass Google's strict Free Tier limits for Gemini APIs (Error 429), the generator implements:
-  - **Pacing**: `time.sleep(5)` before every API call to maintain a request rate below 15 RPM.
-  - **Exponential Backoff**: A `try-except` block catches `ResourceExhausted` exceptions and triggers a 60-second sleep before retrying (max 5 retries).
+  ซึ่งบังคับให้ LLM ออกแบบผลลัพธ์เป็นตาราง Markdown 2 คอลัมน์ (`| ขั้นตอน | กระบวนการ |`) 
+- **การจัดการ Rate Limit**: เพื่อแก้ปัญหาโควต้าเต็ม (Error 429) จาก Google Free Tier ระบบมีกลไกดังนี้:
+  - **Pacing**: มีการหยุดรอ `time.sleep(5)` ก่อนเรียก API ทุกครั้ง เพื่อให้ความเร็วในการ Request ไม่เกินขีดจำกัด (ประมาณ 12 RPM)
+  - **Exponential Backoff**: ใช้ `try-except` จับ Error `ResourceExhausted` แล้วสั่งให้ระบบหยุดรอ (Sleep) 60 วินาทีก่อนลองใหม่ (สูงสุด 5 ครั้ง)
 
 ---
 
-## 💻 Developer Notes & Extensibility
+## 💻 บันทึกสำหรับนักพัฒนา (Developer Notes & Extensibility)
 
-### Updating the Model
-The system currently uses `gemini-flash-lite-latest` in `02_generate.py` to maximize the daily quota. For production environments with a paid Google Cloud billing account, this should be upgraded to `gemini-1.5-pro` or `gemini-2.5-pro` for deeper reasoning and longer context windows.
+### การอัปเกรดโมเดล AI
+ปัจจุบันระบบใช้โมเดล `gemini-flash-lite-latest` ใน `02_generate.py` เพื่อหลีกเลี่ยงการติด Limit ของ Free Tier หากนำระบบนี้ไปใช้จริงในระดับ Production (และมีบัญชี Google Cloud แบบเสียเงิน) ควรเปลี่ยนไปใช้ `gemini-1.5-pro` หรือ `gemini-2.5-pro` เพื่อเพิ่มความสามารถในการวิเคราะห์เหตุผลและรองรับ Context ที่ยาวขึ้น
 
 ```python
-# In 02_generate.py
+# ในไฟล์ 02_generate.py
 genai.configure(api_key=api_key)
-model = genai.GenerativeModel("gemini-flash-lite-latest") # Change this for production
+model = genai.GenerativeModel("gemini-flash-lite-latest") # เปลี่ยนตรงนี้สำหรับ Production
 ```
 
-### Modifying the Prompt Template
-To change the output format (e.g., switching from a Markdown Table back to raw CLI commands or JSON), locate the `TEMPLATE_SECTIONS` array in `02_generate.py` and modify the `fill_instruction` strings.
+### การปรับแต่งเทมเพลต Prompt
+หากต้องการเปลี่ยนรูปแบบผลลัพธ์ (เช่น เปลี่ยนจากตาราง Markdown เป็นคำสั่ง CLI เพียวๆ หรือ JSON) ให้แก้ไขตัวแปร `TEMPLATE_SECTIONS` ในไฟล์ `02_generate.py` ตรงส่วน `fill_instruction`
 
-### Zero-Day Handling
-If the Retrieval phase returns `0` chunks, the system automatically injects a Zero-Day warning (`⚠️ คำเตือน: เนื้อหาส่วนนี้สร้างจากความรู้ทั่วไปของ AI โดยตรง...`) into the final Markdown. This ensures users know when the LLM is hallucinating or relying on pre-training data rather than the organization's Knowledge Base.
+### ระบบแจ้งเตือน Zero-Day (Zero-Day Handling)
+หากขั้นตอน Retrieval ค้นหาไม่พบข้อมูลที่เกี่ยวข้องเลย (0 Chunks) ระบบจะแทรกคำเตือนอัตโนมัติ (`⚠️ คำเตือน: เนื้อหาส่วนนี้สร้างจากความรู้ทั่วไปของ AI โดยตรง...`) เข้าไปในหัวข้อนั้น เพื่อให้ผู้ใช้ทราบว่า AI กำลังใช้ข้อมูลจาก Pre-training ภายนอก ไม่ได้ใช้จาก Knowledge Base ขององค์กร

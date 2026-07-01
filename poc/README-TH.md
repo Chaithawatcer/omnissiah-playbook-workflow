@@ -1,6 +1,6 @@
 # 🛡️ คู่มือการใช้งานระบบ Omnissiah RAG PoC (ภาษาไทย)
 
-นี่คือโปรเจกต์แบบ Proof of Concept (PoC) สำหรับระบบสร้าง Incident Response Playbook อัตโนมัติ (Omnissiah) โดยใช้เทคโนโลยี **RAG (Retrieval-Augmented Generation)** ร่วมกับ **Gemini 2.0 Flash** 
+นี่คือโปรเจกต์แบบ Proof of Concept (PoC) สำหรับระบบสร้าง Incident Response Playbook อัตโนมัติ (Omnissiah) โดยใช้เทคโนโลยี **RAG (Retrieval-Augmented Generation)** ร่วมกับ **Gemini Flash Lite** (ปรับใช้ให้รองรับข้อจำกัด API Free Tier) 
 
 หลักการทำงานคือการนำ Playbook ต้นฉบับทั้ง 15 เล่มมาแยกส่วน (Chunk) แล้วเก็บลง Vector Database (ChromaDB) จากนั้นเมื่อระบบต้องการสร้าง Playbook ใหม่ ระบบจะดึงข้อมูลที่เกี่ยวข้องกับภัยคุกคามนั้นๆ (กรองด้วย Phase และ Technique ID) มาให้ AI สรุปและเขียนออกมาตาม Master Template
 
@@ -66,6 +66,10 @@ python 02_generate.py --threat "WannaCry"
 export GEMINI_API_KEY="YOUR_API_KEY_HERE"
 python 02_generate.py --threat "WannaCry"
 ```
+
+> **⚠️ หมายเหตุสำคัญ (โปรดอ่านก่อนรัน):**
+> 1. **FutureWarning**: หากรันแล้วเจอ Error ขยะสีแดงๆ แจ้งเตือนว่าแพ็กเกจ `google.generativeai` หมดอายุ (Deprecated) **ให้เพิกเฉยได้เลยครับ** โค้ดยังทำงานต่อได้ปกติ
+> 2. **ความล่าช้าตอนรัน**: สคริปต์นี้ถูกเขียนให้ **จงใจหยุดรอ (Sleep) 5 วินาที** ก่อนจะวิเคราะห์แต่ละ Phase เพื่อป้องกันไม่ให้ Google แบน API ของเราเนื่องจากยิงคำสั่งถี่เกินไป (Rate Limit ของของฟรี) ทำให้การรัน 1 เล่มจะใช้เวลาประมาณ 30-40 วินาทีครับ
 
 ---
 

@@ -42,11 +42,10 @@ TEMPLATE_SECTIONS = [
         "heading": "## 1️⃣ Phase 1: Preparation",
         "fill_instruction": (
             "คุณคือ SOC Analyst ผู้เชี่ยวชาญด้าน Incident Response "
-            "จากข้อมูลด้านล่าง เขียนส่วน Preparation สำหรับ playbook นี้ในภาษาไทย:\n"
-            "1. รายการเครื่องมือที่ต้องเตรียม (tool name, คำสั่งเช็ค, หน้าที่)\n"
-            "2. บทบาทของทีม IR\n"
-            "3. แผนการสื่อสารฉุกเฉิน\n"
-            "เขียนเป็น Markdown พร้อม bullet points และ code blocks สำหรับคำสั่ง"
+            "จากข้อมูลด้านล่าง เขียนส่วน Preparation สำหรับ playbook นี้ในภาษาไทย โดยไม่ต้องใส่คำสั่ง Command ลึกๆ "
+            "แต่ให้อธิบายเป็นขั้นตอนที่เข้าใจง่าย จัดรูปแบบผลลัพธ์เป็นตาราง Markdown (Table) ที่มี 2 คอลัมน์คือ:\n"
+            "| ขั้นตอน | กระบวนการ |\n"
+            "โดยคอลัมน์ 'ขั้นตอน' คือชื่อหัวข้อย่อย และ 'กระบวนการ' คือคำอธิบายสิ่งที่ต้องทำ"
         ),
     },
     {
@@ -54,12 +53,10 @@ TEMPLATE_SECTIONS = [
         "heading": "## 2️⃣ Phase 2: Identification & Analysis",
         "fill_instruction": (
             "คุณคือ SOC Analyst ผู้เชี่ยวชาญด้าน Incident Response "
-            "จากข้อมูลด้านล่าง เขียนส่วน Detection & Analysis สำหรับ playbook นี้ในภาษาไทย:\n"
-            "1. Log sources ที่ต้องตรวจสอบ (เฉพาะ technique นี้ ไม่ใช่ทั่วไป)\n"
-            "2. Detection queries / SIEM rules (ใส่คำสั่ง query จริง)\n"
-            "3. IOC ที่ต้องค้นหา\n"
-            "4. วิธีประเมินขอบเขตการโจมตี\n"
-            "เขียนเป็น Markdown พร้อม code blocks สำหรับ query"
+            "จากข้อมูลด้านล่าง เขียนส่วน Detection & Analysis สำหรับ playbook นี้ในภาษาไทย โดยไม่ต้องใส่คำสั่ง Command ลึกๆ "
+            "แต่ให้อธิบายเป็นขั้นตอนที่เข้าใจง่าย จัดรูปแบบผลลัพธ์เป็นตาราง Markdown (Table) ที่มี 2 คอลัมน์คือ:\n"
+            "| ขั้นตอน | กระบวนการ |\n"
+            "โดยคอลัมน์ 'ขั้นตอน' คือชื่อหัวข้อย่อย (เช่น Process Creation) และ 'กระบวนการ' คือคำอธิบายสิ่งผิดปกติที่ต้องตรวจสอบ"
         ),
     },
     {
@@ -67,11 +64,10 @@ TEMPLATE_SECTIONS = [
         "heading": "## 3️⃣ Phase 3: Containment",
         "fill_instruction": (
             "คุณคือ SOC Analyst ผู้เชี่ยวชาญด้าน Incident Response "
-            "จากข้อมูลด้านล่าง เขียนส่วน Containment สำหรับ playbook นี้ในภาษาไทย:\n"
-            "1. Short-term containment (ขั้นตอนฉุกเฉิน numbered steps)\n"
-            "2. Long-term containment\n"
-            "3. การเก็บรักษาหลักฐาน (Evidence Preservation)\n"
-            "เขียนเป็น Markdown พร้อม code blocks สำหรับคำสั่ง"
+            "จากข้อมูลด้านล่าง เขียนส่วน Containment สำหรับ playbook นี้ในภาษาไทย โดยไม่ต้องใส่คำสั่ง Command ลึกๆ "
+            "แต่ให้อธิบายเป็นขั้นตอนที่เข้าใจง่าย จัดรูปแบบผลลัพธ์เป็นตาราง Markdown (Table) ที่มี 2 คอลัมน์คือ:\n"
+            "| ขั้นตอน | กระบวนการ |\n"
+            "โดยคอลัมน์ 'ขั้นตอน' คือชื่อหัวข้อย่อย (เช่น การกักกันระยะสั้น) และ 'กระบวนการ' คือคำอธิบายสิ่งที่ต้องทำ"
         ),
     },
     {
@@ -79,12 +75,10 @@ TEMPLATE_SECTIONS = [
         "heading": "## 4️⃣ Phase 4: Eradication & Recovery",
         "fill_instruction": (
             "คุณคือ SOC Analyst ผู้เชี่ยวชาญด้าน Incident Response "
-            "จากข้อมูลด้านล่าง เขียนส่วน Eradication & Recovery สำหรับ playbook นี้ในภาษาไทย:\n"
-            "1. ขั้นตอนกำจัด process/service ของมัลแวร์\n"
-            "2. ลบ persistence mechanism\n"
-            "3. Patch ช่องโหว่ต้นเหตุ\n"
-            "4. กู้คืนระบบและยืนยันความสะอาด\n"
-            "เขียนเป็น Markdown พร้อม code blocks"
+            "จากข้อมูลด้านล่าง เขียนส่วน Eradication & Recovery สำหรับ playbook นี้ในภาษาไทย โดยไม่ต้องใส่คำสั่ง Command ลึกๆ "
+            "แต่ให้อธิบายเป็นขั้นตอนที่เข้าใจง่าย จัดรูปแบบผลลัพธ์เป็นตาราง Markdown (Table) ที่มี 2 คอลัมน์คือ:\n"
+            "| ขั้นตอน | กระบวนการ |\n"
+            "โดยคอลัมน์ 'ขั้นตอน' คือชื่อหัวข้อย่อย (เช่น การกำจัดมัลแวร์) และ 'กระบวนการ' คือคำอธิบายสิ่งที่ต้องทำ"
         ),
     },
     {
@@ -92,12 +86,10 @@ TEMPLATE_SECTIONS = [
         "heading": "## 5️⃣ Phase 5: Post-Incident Review",
         "fill_instruction": (
             "คุณคือ SOC Analyst ผู้เชี่ยวชาญด้าน Incident Response "
-            "จากข้อมูลด้านล่าง เขียนส่วน Post-Incident Review สำหรับ playbook นี้ในภาษาไทย:\n"
-            "1. Lessons Learned (สิ่งที่ค้นพบจากเหตุการณ์)\n"
-            "2. Gap Analysis (อะไรที่ขาดหายหรือล้มเหลว)\n"
-            "3. Improvement Actions (สิ่งที่ต้องปรับปรุง)\n"
-            "4. การอัปเดต Detection Rules\n"
-            "เขียนเป็น Markdown"
+            "จากข้อมูลด้านล่าง เขียนส่วน Post-Incident Review สำหรับ playbook นี้ในภาษาไทย โดยไม่ต้องใส่คำสั่ง Command ลึกๆ "
+            "แต่ให้อธิบายเป็นขั้นตอนที่เข้าใจง่าย จัดรูปแบบผลลัพธ์เป็นตาราง Markdown (Table) ที่มี 2 คอลัมน์คือ:\n"
+            "| ขั้นตอน | กระบวนการ |\n"
+            "โดยคอลัมน์ 'ขั้นตอน' คือชื่อหัวข้อย่อย (เช่น บทเรียนที่ได้รับ) และ 'กระบวนการ' คือคำอธิบายสิ่งที่ต้องทำ"
         ),
     },
 ]
@@ -181,6 +173,7 @@ def generate_section(model, section: dict, threat_name: str, technique_ids: list
 - อย่าเขียนทั่วไปเกินไป ให้เฉพาะเจาะจงกับ technique และ threat นี้
 - ถ้า Knowledge Base มีคำสั่ง CLI ให้ใส่ด้วย
 - เขียนเป็นภาษาไทย
+- **สำคัญมาก:** ห้ามเกริ่นนำ ห้ามมีคำทักทาย ห้ามมีสรุปปิดท้าย ห้ามพูดคุยโต้ตอบ (เช่น ห้ามใช้คำว่า "ในฐานะ SOC Analyst..." หรือ "นี่คือส่วน...") ให้ตอบเฉพาะตารางและข้อมูลในรูปแบบเอกสารทางการเท่านั้น
 """
 
     max_retries = 5
@@ -288,7 +281,7 @@ def main():
         sys.exit(1)
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    model = genai.GenerativeModel("gemini-flash-lite-latest")
 
     # เชื่อมต่อ ChromaDB
     client = chromadb.PersistentClient(path=CHROMA_DIR)
