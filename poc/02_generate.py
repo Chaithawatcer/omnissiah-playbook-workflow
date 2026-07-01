@@ -15,6 +15,7 @@ Usage:
 import os
 import sys
 import json
+import time
 import argparse
 import datetime
 import chromadb
@@ -182,8 +183,21 @@ def generate_section(model, section: dict, threat_name: str, technique_ids: list
 - เขียนเป็นภาษาไทย
 """
 
-    response = model.generate_content(prompt)
-    return response.text
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            if "429" in str(e) or "ResourceExhausted" in str(e) or "quota" in str(e).lower():
+                if attempt < max_retries - 1:
+                    console.print(f"\n[yellow]⚠️  API Rate Limit (Free Tier). รอ 60 วินาทีเพื่อลองใหม่ (ครั้งที่ {attempt+1}/{max_retries})...[/yellow]")
+                    time.sleep(60)
+                else:
+                    raise e
+            else:
+                raise e
+    return ""
 
 
 def assemble_playbook(threat_name: str, severity: str, technique_ids: list[str],
