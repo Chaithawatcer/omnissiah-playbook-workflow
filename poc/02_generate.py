@@ -183,9 +183,10 @@ def generate_section(model, section: dict, threat_name: str, technique_ids: list
 - เขียนเป็นภาษาไทย
 """
 
-    max_retries = 3
+    max_retries = 5
     for attempt in range(max_retries):
         try:
+            time.sleep(5)  # ถ่วงเวลา 5 วินาทีก่อนเรียก API เพื่อกระจาย Load (แก้ปัญหา Rate Limit ชนเพดาน)
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
@@ -287,7 +288,7 @@ def main():
         sys.exit(1)
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     # เชื่อมต่อ ChromaDB
     client = chromadb.PersistentClient(path=CHROMA_DIR)
