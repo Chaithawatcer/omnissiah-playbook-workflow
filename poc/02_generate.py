@@ -311,6 +311,11 @@ def main():
 
             # Step 2: LLM Generate
             content = generate_section(model, section, threat_key, technique_ids, retrieved_chunks)
+            
+            # ถ้าไม่ได้ข้อมูลจาก RAG เลย ให้แปะป้ายแจ้งเตือนไว้ต้นเนื้อหาของ Phase นั้น
+            if len(retrieved_chunks) == 0:
+                content = "> ⚠️ **คำเตือน:** เนื้อหาส่วนนี้สร้างจากความรู้ทั่วไปของ AI โดยตรง (Zero-Day) เนื่องจากไม่พบข้อมูลในองค์ความรู้ (RAG)\n\n" + content
+                
             sections[phase] = content
             progress.update(task, description=f"[green]✅ Phase {phase}: done[/green]")
             progress.stop_task(task)
