@@ -1,0 +1,77 @@
+{
+  "WannaCry": {
+    "technique_ids": ["T1486", "T1190", "T1021.002"],
+    "severity": "Critical",
+    "description": "WannaCry Ransomware worm exploiting MS17-010 (EternalBlue)"
+  },
+  "Phishing": {
+    "technique_ids": ["T1566.001", "T1204.002", "T1059.001"],
+    "severity": "High",
+    "description": "Spearphishing with malicious attachment leading to malware execution"
+  },
+  "SQL Injection": {
+    "technique_ids": ["T1190", "T1059.004", "T1078"],
+    "severity": "High",
+    "description": "SQL Injection attack on public-facing web application"
+  },
+  "Brute Force": {
+    "technique_ids": ["T1110.001", "T1078", "T1021.001"],
+    "severity": "Medium",
+    "description": "Password brute force attack against authentication systems"
+  },
+  "Web Shell": {
+    "technique_ids": ["T1505.003", "T1190", "T1059.004"],
+    "severity": "Critical",
+    "description": "Web shell deployment after exploiting vulnerable web application"
+  },
+  "Credential Dumping": {
+    "technique_ids": ["T1003.001", "T1078", "T1550.002"],
+    "severity": "Critical",
+    "description": "LSASS memory credential dumping using Mimikatz or similar tools"
+  },
+  "PowerShell Malware": {
+    "technique_ids": ["T1059.001", "T1055", "T1547.001"],
+    "severity": "High",
+    "description": "Fileless malware execution via obfuscated PowerShell scripts"
+  },
+  "Data Exfiltration": {
+    "technique_ids": ["T1041", "T1048", "T1083"],
+    "severity": "Critical",
+    "description": "Sensitive data exfiltration over command and control channel"
+  },
+  "Lateral Movement": {
+    "technique_ids": ["T1550.002", "T1021.001", "T1021.002"],
+    "severity": "High",
+    "description": "Pass-the-Hash lateral movement via SMB and RDP"
+  },
+  "Scheduled Task": {
+    "technique_ids": ["T1053.005", "T1547.001", "T1059.001"],
+    "severity": "Medium",
+    "description": "Malware persistence via scheduled tasks and registry run keys"
+  },
+  "DNS Tunneling": {
+    "technique_ids": ["T1071.004", "T1041", "T1568"],
+    "severity": "High",
+    "description": "Command and control communication via DNS tunneling"
+  },
+  "Drive-by Compromise": {
+    "technique_ids": ["T1189", "T1204.001", "T1059.007"],
+    "severity": "High",
+    "description": "Drive-by download via malicious or compromised website"
+  },
+  "Cryptomining": {
+    "technique_ids": ["T1496", "T1059.001", "T1053.005"],
+    "severity": "Medium",
+    "description": "Unauthorized cryptocurrency mining (XMRig or similar)"
+  },
+  "RDP Brute Force": {
+    "technique_ids": ["T1110.001", "T1021.001", "T1078"],
+    "severity": "High",
+    "description": "Remote Desktop Protocol brute force and unauthorized access"
+  },
+  "Log Tampering": {
+    "technique_ids": ["T1070.001", "T1562.001", "T1562.002"],
+    "severity": "High",
+    "description": "Defense evasion via Windows Event Log clearing and security tool disabling"
+  }
+}
