@@ -149,8 +149,32 @@ def query_rag(collection, query: str, phase: str, technique_ids: list[str], n_re
     return retrieved_docs[:n_results]
 
 
+def check_technique_coverage(collection, technique_ids: list[str]) -> list[str]:
+    """
+    ตรวจว่า technique_id ตัวไหน "ไม่มี chunk ใดๆ ใน KB รองรับเลย"
+    - ดึง metadata ทุก chunk ออกมา (KB เล็ก จึงกวาดทั้งหมดได้)
+    - ใช้ substring match ให้ตรงกับตรรกะจริงใน query_rag() เพื่อไม่ให้ผลไม่ตรงกัน
+      (เช่น target 'T1071' จะถือว่า cover ถ้ามี chunk ที่ metadata เป็น 'T1071.004')
+    คืน: list ของ technique_id ที่ "ขาด" การรองรับใน KB (เรียงตามลำดับเดิม)
+    """
+    try:
+        all_meta = collection.get(include=["metadatas"]).get("metadatas", []) or []
+    except Exception:
+        # เช็คไม่ได้ → ไม่ฟันธงว่าขาด เพื่อไม่ให้ทั้งงานล้ม
+        return []
+
+    covered = set()
+    for meta in all_meta:
+        tech_str = (meta or {}).get("technique_ids", "") or ""
+        for tid in technique_ids:
+            if tid in tech_str:
+                covered.add(tid)
+
+    return [tid for tid in technique_ids if tid not in covered]
+
+
 def generate_section(model, section: dict, threat_name: str, technique_ids: list[str],
-                     retrieved_chunks: list[str]) -> str:
+                     retrieved_chunks: list[str], missing_techs: list[str] = None) -> str:
     """
     สร้างเนื้อหา 1 Phase ด้วย LLM
     Input: fill instruction + retrieved chunks จาก RAG
@@ -158,12 +182,21 @@ def generate_section(model, section: dict, threat_name: str, technique_ids: list
     """
     context = "\n\n---\n".join(retrieved_chunks) if retrieved_chunks else "ไม่พบข้อมูลที่เกี่ยวข้องใน Knowledge Base"
 
+    missing_note = ""
+    if missing_techs:
+        missing_note = (
+            f"\n**⚠️ หมายเหตุความครอบคลุม:** เทคนิคต่อไปนี้ไม่มีข้อมูลอ้างอิงใน Knowledge Base เลย: "
+            f"{', '.join(missing_techs)}\n"
+            f"สำหรับส่วนที่เกี่ยวข้องกับเทคนิคเหล่านี้ ห้ามแต่งชื่อเครื่องมือ/Event ID/คำสั่งที่เจาะจงขึ้นมาเอง "
+            f"ให้เขียนเป็นแนวทางทั่วไปที่ระมัดระวัง และกำกับในตารางว่า '(ยังไม่ได้ตรวจสอบกับ KB)'\n"
+        )
+
     prompt = f"""
 {section['fill_instruction']}
 
 **Threat:** {threat_name}
 **MITRE ATT&CK Techniques:** {', '.join(technique_ids)}
-
+{missing_note}
 **ข้อมูลอ้างอิงจาก Knowledge Base (IR Playbook จริง):**
 {context}
 
@@ -195,11 +228,28 @@ def generate_section(model, section: dict, threat_name: str, technique_ids: list
 
 
 def assemble_playbook(threat_name: str, severity: str, technique_ids: list[str],
-                      sections: dict[str, str]) -> str:
+                      sections: dict[str, str], missing_techs: list[str] = None) -> str:
     """ประกอบ Playbook สมบูรณ์จาก sections ที่ generate แล้ว"""
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    missing_techs = missing_techs or []
 
     techniques_table = "\n".join([f"| {tid} |" for tid in technique_ids])
+
+    # ติดธง ⚠️ ต่อท้ายเทคนิคที่ไม่มี KB รองรับ ในแถว MITRE ATT&CK
+    mitre_cell = ', '.join(
+        f"{tid} ⚠️" if tid in missing_techs else tid for tid in technique_ids
+    )
+
+    # Banner เตือนความครอบคลุม (โผล่เฉพาะเมื่อมีเทคนิคที่ขาด KB)
+    coverage_banner = ""
+    if missing_techs:
+        coverage_banner = (
+            "> ## ⚠️ Knowledge Coverage Warning\n"
+            f"> เทคนิคต่อไปนี้ **ไม่มีข้อมูลอ้างอิงใน Knowledge Base เลย:** {', '.join(missing_techs)}\n"
+            "> เนื้อหาส่วนที่เกี่ยวข้องกับเทคนิคเหล่านี้ถูกสร้างจากความรู้ทั่วไปของ AI (ไม่ได้อิง IR Playbook จริง)\n"
+            "> จึงมีความเสี่ยงที่ playbook จะ **ประกาศครอบคลุมเทคนิคที่ไม่มีขั้นตอนรับมือจริงรองรับ**\n"
+            "> **ต้องให้ผู้เชี่ยวชาญตรวจสอบเทคนิคที่ติดธง ⚠️ เป็นพิเศษก่อนใช้งาน**\n\n---\n\n"
+        )
 
     header = f"""# 🛡️ Incident Response Playbook: {threat_name}
 
@@ -209,14 +259,14 @@ def assemble_playbook(threat_name: str, severity: str, technique_ids: list[str],
 
 ---
 
-## 📋 Header Information
+{coverage_banner}## 📋 Header Information
 
 | Field | Value |
 |-------|-------|
 | **Threat Name** | {threat_name} |
 | **Severity** | {severity} |
 | **Status** | DRAFT |
-| **MITRE ATT&CK** | {', '.join(technique_ids)} |
+| **MITRE ATT&CK** | {mitre_cell} |
 
 ---
 
@@ -295,6 +345,19 @@ def main():
         console.print("[red]❌ ไม่พบ ChromaDB collection — กรุณารัน 01_ingest.py ก่อน[/red]")
         sys.exit(1)
 
+    # ตรวจความครอบคลุม: technique_id ไหนไม่มี chunk รองรับใน KB เลย
+    missing_techs = check_technique_coverage(collection, technique_ids)
+    if missing_techs:
+        console.print(
+            f"[bold yellow]⚠️  Coverage Warning:[/bold yellow] ไม่พบข้อมูลใน KB สำหรับเทคนิค: "
+            f"[red]{', '.join(missing_techs)}[/red]"
+        )
+        console.print(
+            "[yellow]   เนื้อหาส่วนที่เกี่ยวข้องจะอิงความรู้ทั่วไปของ AI และจะถูกแปะป้ายเตือนในเอกสาร[/yellow]\n"
+        )
+    else:
+        console.print("[green]✅ Coverage: ทุกเทคนิคมีข้อมูลอ้างอิงใน KB[/green]\n")
+
     # Per-Section Generation Loop
     sections = {}
     with Progress(
@@ -318,7 +381,7 @@ def main():
             progress.update(task, description=f"[cyan]Phase {phase}: retrieved {len(retrieved_chunks)} chunks...")
 
             # Step 2: LLM Generate
-            content = generate_section(model, section, threat_key, technique_ids, retrieved_chunks)
+            content = generate_section(model, section, threat_key, technique_ids, retrieved_chunks, missing_techs)
             
             # ถ้าไม่ได้ข้อมูลจาก RAG เลย ให้แปะป้ายแจ้งเตือนไว้ต้นเนื้อหาของ Phase นั้น
             if len(retrieved_chunks) == 0:
@@ -329,7 +392,7 @@ def main():
             progress.stop_task(task)
 
     # Assemble Playbook
-    playbook_md = assemble_playbook(threat_key, severity, technique_ids, sections)
+    playbook_md = assemble_playbook(threat_key, severity, technique_ids, sections, missing_techs)
 
     # บันทึกไฟล์
     OUTPUT_DIR.mkdir(exist_ok=True)
