@@ -40,54 +40,6 @@ source_doc: Data_Exfiltration_IR_Playbook_v1
 - **Email Gateway Log**: email ที่มี attachment ขนาดใหญ่ส่งออกไปยัง external address
 - **Cloud Storage Log**: unusual upload activity บน OneDrive, SharePoint, Google Drive, S3
 
-### Sub: detection_queries
-**Splunk — ตรวจ outbound traffic spike (NetFlow):**
-```spl
-index=netflow direction=outbound
-| eval MB = round(bytes/1048576, 2)
-| stats sum(MB) as total_MB by src_ip, dest_ip, _time
-| where total_MB > 500
-| sort -total_MB
-```
-
-**Splunk — ตรวจ upload ไปยัง cloud storage (Proxy Log):**
-```spl
-index=proxy_logs http_method=POST
-| where (url LIKE "*dropbox.com*" OR url LIKE "*mega.nz*" OR url LIKE "*wetransfer.com*"
-         OR url LIKE "*drive.google.com*" OR url LIKE "*onedrive.live.com*")
-| eval MB = round(bytes_out/1048576, 2)
-| stats sum(MB) as total_MB by src_ip, user, url
-| where total_MB > 100
-| sort -total_MB
-```
-
-**Splunk — ตรวจ DLP alert สำหรับ sensitive data:**
-```spl
-index=dlp_logs severity IN ("High","Critical")
-| stats count by user, src_ip, rule_name, file_name, destination
-| sort -count
-```
-
-**CLI — ตรวจ large file transfer จาก Windows (Sysmon Event ID 15 - FileCreateStreamHash):**
-```powershell
-Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational'; Id=15} -MaxEvents 100 |
-  Where-Object {$_.Message -match "\.zip|\.rar|\.7z|\.tar"} |
-  Select-Object TimeCreated, Message | Format-List
-```
-
-**Elastic (KQL) — ตรวจ DNS exfiltration (long subdomain):**
-```kql
-dns.question.name: * AND dns.question.name.length > 50
-| stats count by dns.question.name, source.ip
-| sort count desc
-```
-
-**CLI — ตรวจ outbound FTP/SFTP connection ผิดปกติ:**
-```bash
-ss -tnp | grep -E ":21\b|:22\b|:990\b" | grep ESTABLISHED
-netstat -anp | grep -E "ESTABLISHED.*:21|ESTABLISHED.*:22" | grep -v "127.0.0.1\|192.168"
-```
-
 ### Sub: ioc_list
 - **Large outbound transfer**: > 500 MB ออกจาก endpoint เดียวใน 1 ชั่วโมง ผิดปกติจาก baseline
 - **Destination domains**: Dropbox, Mega.nz, Pastebin, Anonfiles, 0bin.net, transfer.sh
@@ -96,14 +48,6 @@ netstat -anp | grep -E "ESTABLISHED.*:21|ESTABLISHED.*:22" | grep -v "127.0.0.1\
 - **Process**: `rclone.exe`, `megacmd.exe`, `gdrive.exe`, `aws.exe s3 cp` รันโดย user ที่ไม่ควรใช้
 - **Time anomaly**: transfer เกิดช่วง 02:00-05:00 นอก business hours
 - **Staged files**: ไฟล์ archive ขนาดใหญ่ใน `%TEMP%`, `C:\Windows\Temp`, `/tmp` ก่อน deletion
-
-### Sub: scope_analysis
-- ระบุ **data classification** ของไฟล์ที่ถูก exfiltrate: PII, financial data, IP, trade secret
-- ประเมิน **ปริมาณข้อมูล** ที่ถูก transfer (GB) และ destination
-- ตรวจสอบ **user account** ที่ทำ transfer: เป็น insider threat หรือ compromised account
-- ระบุ **method ที่ใช้**: HTTP POST, FTP, DNS tunneling, email, physical media (USB)
-- ตรวจสอบ **time window** ที่ exfil เกิดขึ้น และ correlate กับ access log ของ data source
-- ประเมิน **downstream impact**: ข้อมูลที่ถูก exfil มีผลต่อ compliance obligation อะไรบ้าง (PDPA, PCI DSS)
 
 ## Phase: containment
 ### Sub: short_term

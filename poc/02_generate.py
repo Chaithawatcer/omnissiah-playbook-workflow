@@ -104,24 +104,28 @@ def load_technique_mapping() -> dict:
 def query_rag(collection, query: str, phase: str, technique_ids: list[str], n_results: int = 5) -> list[str]:
     """
     ดึง chunks จาก ChromaDB ด้วย metadata filter (phase) + semantic similarity
-    แล้วนำมากรอง technique_id ด้วย Python 
+    แล้วนำมากรอง technique_id ด้วย Python
+
+    หมายเหตุ: ถ้าไม่พบ chunk ที่ตรง technique ในเฟสนี้ จะคืนค่าว่าง (ไม่มี fallback
+    แบบ phase-only อีกต่อไป) เพื่อให้ป้าย Zero-Day ทำงานตามจริง และกันไม่ให้ดึง
+    chunk ของ threat อื่นมาปนเงียบๆ
     """
     retrieved_docs = []
     seen_ids = set()
-    
+
     where_filter = {"phase": {"$eq": phase}}
-    
+
     try:
         results = collection.query(
             query_texts=[query],
             n_results=30, # ดึงมาเผื่อกรอง
             where=where_filter,
-            include=["documents", "metadatas", "ids"],
+            include=["documents", "metadatas"],  # ids ถูกคืนมาให้เสมอ ห้ามใส่ใน include (ChromaDB จะ error)
         )
         if results and results["documents"] and results["documents"][0]:
             for doc_id, doc, meta in zip(results["ids"][0], results["documents"][0], results["metadatas"][0]):
                 tech_ids_str = meta.get("technique_ids", "")
-                
+
                 # Check if any of the target technique_ids is in this chunk's technique_ids
                 if any(tech_id in tech_ids_str for tech_id in technique_ids):
                     if doc_id not in seen_ids:
@@ -129,22 +133,9 @@ def query_rag(collection, query: str, phase: str, technique_ids: list[str], n_re
                         retrieved_docs.append(doc)
                         if len(retrieved_docs) >= n_results:
                             break
-    except Exception:
-        pass
-
-    # ถ้าดึงไม่ได้เลย fallback ดึงด้วย phase อย่างเดียว
-    if not retrieved_docs:
-        try:
-            results = collection.query(
-                query_texts=[query],
-                n_results=min(3, n_results),
-                where={"phase": {"$eq": phase}},
-                include=["documents"],
-            )
-            if results and results["documents"] and results["documents"][0]:
-                retrieved_docs = results["documents"][0]
-        except Exception:
-            pass
+    except Exception as e:
+        # ไม่ควรเงียบสนิท — ถ้า query พังจะได้เห็น (เดิมบั๊ก include=["ids"] ถูกกลืนตรงนี้)
+        console.print(f"[red]⚠️  query_rag error (phase={phase}): {e}[/red]")
 
     return retrieved_docs[:n_results]
 

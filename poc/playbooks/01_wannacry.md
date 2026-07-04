@@ -86,7 +86,7 @@ Long-term hardening ปิดช่องโหว่ MS17-010 ถาวร:
 
 ### Sub: persistence_removal [T1486]
 ลบ persistence ที่ WannaCry ฝังไว้:
-- ลบ Registry Key: `Remove-ItemProperty -Path "HKLM:\SOFTWARE\" -Name "WannaCryptor"`
+- ลบ Registry persistence: ลบ Run key value ที่ชี้ไป tasksche.exe (`Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "<random_value_name>"`) และลบคีย์ config `HKLM\SOFTWARE\WanaCrypt0r` (`Remove-Item -Path "HKLM:\SOFTWARE\WanaCrypt0r" -Recurse -Force`)
 - ลบไฟล์มัลแวร์: ค้นหาและลบไฟล์ tasksche.exe, mssecsvc.exe ในโฟลเดอร์ System
 - ลบไฟล์ที่เกี่ยวข้อง: @WanaDecryptor@.exe, @Please_Read_Me@.bat, .wncrypt files
 

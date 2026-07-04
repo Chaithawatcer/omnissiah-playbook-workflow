@@ -15,9 +15,9 @@
     "description": "SQL Injection attack on public-facing web application"
   },
   "Brute Force": {
-    "technique_ids": ["T1110.001", "T1078", "T1021.001"],
+    "technique_ids": ["T1110.001", "T1110.003", "T1078"],
     "severity": "Medium",
-    "description": "Password brute force attack against authentication systems"
+    "description": "Password brute force and spraying against SSH/VPN/web/AD authentication systems"
   },
   "Web Shell": {
     "technique_ids": ["T1505.003", "T1190", "T1059.004"],

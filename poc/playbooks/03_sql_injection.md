@@ -41,39 +41,6 @@ source_doc: SQL_Injection_IR_Playbook_v1
 - **Application Error Log**: stack trace ที่มี SQL syntax error แสดงว่า application error leak schema
 - **Network IDS/IPS (Snort/Suricata)**: alert rule `ET WEB_SERVER SQL Injection` signatures
 
-### Sub: detection_queries
-**Splunk — ค้นหา SQL Injection payload ใน URI:**
-```spl
-index=web_logs sourcetype=access_combined
-| rex field=uri "(?i)(?P<sqli_pattern>union\s+select|or\s+1=1|--|;drop\s+table|benchmark\(|sleep\(|waitfor\s+delay)"
-| where isnotnull(sqli_pattern)
-| stats count by src_ip, uri, sqli_pattern, http_method
-| sort -count
-```
-
-**Splunk — ตรวจจับ error-based SQLi (HTTP 500 หลัง suspicious query):**
-```spl
-index=web_logs status=500
-| rex field=uri "(?i)(?P<param>[?&][^=]+=.*(?:'|%27|--|%2D%2D))"
-| where isnotnull(param)
-| stats count by src_ip, uri, _time
-```
-
-**Elastic (KQL) — หา sqlmap User-Agent:**
-```kql
-http.request.headers.user-agent: "*sqlmap*" OR http.request.headers.user-agent: "*Havij*"
-```
-
-**CLI — grep Apache log หา pattern:**
-```bash
-grep -iE "(union\s+select|or\s+1=1|--|benchmark\(|sleep\(|%27|0x[0-9a-f]+)" /var/log/apache2/access.log | awk '{print $1, $7, $9}' | sort | uniq -c | sort -rn | head 30
-```
-
-**CLI — ตรวจ MySQL audit log หา INFORMATION_SCHEMA query:**
-```bash
-grep -i "information_schema\|sys.tables\|sysobjects\|xp_cmdshell" /var/log/mysql/mysql.log | tail -100
-```
-
 ### Sub: ioc_list
 - **SQLi Payload patterns**: `' OR '1'='1`, `' UNION SELECT NULL--`, `'; DROP TABLE--`, `WAITFOR DELAY '0:0:5'--`, `BENCHMARK(10000000,MD5(1))`
 - **User-Agent strings**: `sqlmap/1.x`, `Havij`, `pangolin`, `BSQL Hacker`
@@ -82,15 +49,6 @@ grep -i "information_schema\|sys.tables\|sysobjects\|xp_cmdshell" /var/log/mysql
 - **Time-based blind SQLi**: response time > 5 วินาทีสำหรับ request เดิม
 - **Unusual DB functions**: `xp_cmdshell`, `UTL_HTTP`, `LOAD_FILE()`, `INTO OUTFILE`
 - **Source IP**: IP ที่มี request rate > 50 req/min ไปยัง endpoint เดียว
-
-### Sub: scope_analysis
-- ระบุ **endpoint ที่ถูก attack** จาก URI ใน log (เช่น `/api/user?id=`, `/search?q=`)
-- ตรวจสอบ **DB tables ที่ถูก query** ผ่าน audit log: มีการ SELECT จาก tables ที่มีข้อมูลสำคัญหรือไม่
-- ประเมินว่ามี **data exfiltration** เกิดขึ้นหรือไม่ โดยดู response size ผิดปกติ (ขนาดใหญ่กว่าปกติมาก)
-- ตรวจสอบว่า attacker ได้ **privilege escalation** ใน DB หรือไม่ เช่น รัน `xp_cmdshell` หรือ `INTO OUTFILE`
-- หาจำนวน **rows ที่ถูก dump** จาก slow query log หรือ network capture
-- ตรวจสอบ **session token** ที่ใช้ร่วมกับ SQLi — อาจมี account takeover ตามมา
-- map ว่ามี **application อื่น** ใช้ DB เดียวกันที่อาจได้รับผลกระทบ
 
 ## Phase: containment
 ### Sub: short_term

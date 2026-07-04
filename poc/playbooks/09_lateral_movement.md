@@ -40,53 +40,6 @@ source_doc: Lateral_Movement_IR_Playbook_v1
 - **Windows Security Event ID 4769**: Kerberos service ticket request (Pass-the-Ticket detection)
 - **Zeek SMB log**: การ access file share ผิดปกติ, ADMIN$ หรือ C$ share access
 
-### Sub: detection_queries
-**Splunk — ตรวจ Pass-the-Hash (Event ID 4624 Type 3 + NTLM จาก unusual source):**
-```spl
-index=windows_security EventCode=4624 Logon_Type=3 AuthenticationPackageName=NTLM
-| where NOT (src_ip="127.0.0.1" OR src_ip="::1")
-| stats count by src_ip, Account_Name, Workstation_Name, dest_host
-| where count > 5
-| sort -count
-```
-
-**Splunk — ตรวจ Explicit Credential Logon (Event ID 4648 — PSExec/WMI):**
-```spl
-index=windows_security EventCode=4648
-| where TargetServerName != ComputerName
-| stats count by SubjectUserName, TargetUserName, TargetServerName, ProcessName
-| where count > 2
-| sort -count
-```
-
-**Splunk — ตรวจ Admin Share Access (C$, ADMIN$):**
-```spl
-index=windows_security EventCode=5140
-| where ShareName IN ("\\\\*\\ADMIN$","\\\\*\\C$","\\\\*\\IPC$")
-| stats count by SubjectUserName, IpAddress, ShareName, ComputerName
-| sort -count
-```
-
-**CLI — ตรวจ SMB connection ผิดปกติด้วย Zeek:**
-```bash
-zeek-cut id.orig_h id.resp_h id.resp_p proto < conn.log | awk '$3==445' | sort | uniq -c | sort -rn | head 20
-```
-
-**Splunk — ตรวจ PSExec (Sysmon Event ID 1 + psexesvc.exe):**
-```spl
-index=sysmon EventCode=1
-| where Image LIKE "%psexesvc.exe%" OR ParentImage LIKE "%psexec.exe%"
-| table _time, ComputerName, Image, CommandLine, User, ParentImage
-```
-
-**Splunk — ตรวจ WMI lateral movement (wmiprvse spawn process):**
-```spl
-index=sysmon EventCode=1
-| where ParentImage LIKE "%WmiPrvSE.exe%"
-  AND NOT (Image LIKE "%WmiPrvSE.exe%" OR Image LIKE "%svchost.exe%")
-| table _time, ComputerName, ParentImage, Image, CommandLine
-```
-
 ### Sub: ioc_list
 - **Event ID 4648**: SubjectUserName ≠ TargetUserName (ใช้ credential คนอื่น login)
 - **Event ID 4624 Type 9**: NewCredentials logon — บ่งบอก Pass-the-Hash เมื่อ paired กับ NTLM
@@ -95,14 +48,6 @@ index=sysmon EventCode=1
 - **SMB access**: Workstation-to-Workstation SMB (port 445) ซึ่งไม่ใช่ file server access ปกติ
 - **Time anomaly**: lateral movement เกิดรวดเร็วหลัง initial compromise ภายใน 1-2 ชั่วโมง
 - **Account**: Service account หรือ Domain Admin ถูกใช้บน machine ที่ไม่ควรมี (unusual workstation)
-
-### Sub: scope_analysis
-- สร้าง **lateral movement map**: Machine A → Machine B → Machine C โดย map จาก Event 4648/4624
-- ระบุ **credential ที่ถูกใช้**: account ชื่ออะไร, มี privilege ระดับไหน บน machine ใดบ้าง
-- ตรวจสอบ **high-value target** ที่ถูก pivot เข้า: Domain Controller, File Server, Database Server
-- ระบุว่า attacker อยู่ใน **machine ใดบ้าง** ณ ปัจจุบัน และต้องการ isolate กี่ เครื่อง
-- ตรวจสอบ **จุดเริ่มต้น (patient zero)**: machine แรกที่ถูก compromise และเริ่ม pivot
-- ประเมิน **blast radius**: ถ้า attacker ถึง DC แล้ว ต้องถือว่า full domain compromise
 
 ## Phase: containment
 ### Sub: short_term

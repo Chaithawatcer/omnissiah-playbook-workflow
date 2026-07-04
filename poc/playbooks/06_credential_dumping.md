@@ -40,52 +40,6 @@ source_doc: Credential_Dumping_IR_Playbook_v1
 - **Sysmon Event ID 7 (ImageLoad)**: `comsvcs.dll` loaded โดย process ที่ไม่ใช่ `dllhost.exe`
 - **EDR (CrowdStrike/Sentinel One)**: alert สำหรับ LSASS memory access หรือ credential access behavior
 
-### Sub: detection_queries
-**Splunk — ตรวจ LSASS Process Access (Sysmon Event ID 10):**
-```spl
-index=sysmon EventCode=10 TargetImage="*lsass.exe"
-| where NOT (SourceImage LIKE "%MsMpEng.exe%" OR SourceImage LIKE "%svchost.exe%" OR SourceImage LIKE "%csrss.exe%")
-| table _time, ComputerName, SourceImage, SourceProcessId, GrantedAccess
-| sort -_time
-```
-
-**Splunk — ตรวจ SeDebugPrivilege (Event ID 4672):**
-```spl
-index=windows_security EventCode=4672
-| where PrivilegeList LIKE "*SeDebugPrivilege*"
-| stats count by Account_Name, Workstation_Name, _time
-| where count > 1
-```
-
-**Splunk — ตรวจ comsvcs.dll dump technique:**
-```spl
-index=sysmon EventCode=1
-| where CommandLine LIKE "*comsvcs*" AND CommandLine LIKE "*MiniDump*"
-| table _time, ComputerName, Image, CommandLine, User
-```
-
-**CLI — PowerShell ตรวจ process ที่ access LSASS:**
-```powershell
-Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational'; Id=10} |
-  Where-Object {$_.Message -match "lsass.exe" -and $_.Message -notmatch "MsMpEng"} |
-  Select-Object TimeCreated, Message | Format-List
-```
-
-**CLI — ตรวจหา dump file ที่ถูกสร้าง:**
-```powershell
-Get-ChildItem -Path C:\ -Recurse -Include "*.dmp","lsass*","dump*" -ErrorAction SilentlyContinue |
-  Where-Object {$_.LastWriteTime -gt (Get-Date).AddHours(-24)} |
-  Select-Object FullName, LastWriteTime, Length
-```
-
-**Splunk — ตรวจ Pass-the-Hash (Logon Type 9 + NTLM):**
-```spl
-index=windows_security EventCode=4624 Logon_Type=9
-| where AuthenticationPackageName="NTLM"
-| stats count by Account_Name, src_ip, Workstation_Name
-| where count > 3
-```
-
 ### Sub: ioc_list
 - **Sysmon Event ID 10**: `GrantedAccess=0x1010` หรือ `0x1410` ไปยัง `lsass.exe` จาก process ที่ไม่ใช่ system
 - **Process name**: `mimikatz.exe`, `mimitray.exe`, `wce.exe`, `pwdump.exe`, `procdump.exe` (ในบริบทที่ผิดปกติ)
@@ -94,14 +48,6 @@ index=windows_security EventCode=4624 Logon_Type=9
 - **Registry**: `HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest` ถูก set `UseLogonCredential=1`
 - **Event ID 4673**: ใช้ `SeDebugPrivilege` จาก process ที่ไม่ใช่ debugger
 - **Outbound**: lsass dump file ถูก transfer ผ่าน SMB, FTP, หรือ HTTP ออกไปยัง C2
-
-### Sub: scope_analysis
-- ระบุ **ประเภท credential ที่อาจถูก dump**: NTLM hash, Kerberos TGT, plaintext password (WDigest), DPAPI keys
-- ตรวจสอบว่า **domain admin credential** ถูก dump หรือไม่ — ถ้าใช่ ถือเป็น full domain compromise
-- Hunt หา **lateral movement** ที่ใช้ credential ที่ dump: Event ID 4648 (explicit credential logon), 4624 Type 3/9
-- ตรวจสอบ **machine ทุก เครื่อง** ที่ compromised user เคย login เพราะ credential อาจถูก cache
-- ตรวจ **krbtgt password age**: ถ้าไม่เปลี่ยนนาน อาจมี Golden Ticket attack ตามมา
-- ประเมินว่า attacker ได้ **cloud credential** (Azure AD token, AWS IAM key) ที่ cached บน machine ด้วยหรือไม่
 
 ## Phase: containment
 ### Sub: short_term

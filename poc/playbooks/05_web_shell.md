@@ -40,46 +40,6 @@ source_doc: Web_Shell_IR_Playbook_v1
 - **Linux /var/log/messages**: ดู outbound connection จาก web server process ไปยัง IP ภายนอก
 - **EDR (CrowdStrike/Defender)**: alert เรื่อง `cmd.exe` หรือ `powershell.exe` spawned จาก `w3wp.exe`
 
-### Sub: detection_queries
-**Splunk — ตรวจ Web Shell access (URI ผิดปกติที่มี command parameter):**
-```spl
-index=web_logs sourcetype=access_combined
-| rex field=uri "(?i)(?P<shell_param>cmd=|exec=|command=|shell=|pass=|passwd=|system\(|eval\(|base64_decode)"
-| where isnotnull(shell_param)
-| stats count by src_ip, uri, http_method, status
-| sort -count
-```
-
-**Splunk — ตรวจ process spawned จาก web server (Sysmon Event ID 1):**
-```spl
-index=sysmon EventCode=1
-| where (ParentImage LIKE "%w3wp.exe%" OR ParentImage LIKE "%httpd%" OR ParentImage LIKE "%nginx%")
-  AND (Image LIKE "%cmd.exe%" OR Image LIKE "%powershell.exe%" OR Image LIKE "%sh%" OR Image LIKE "%bash%")
-| table _time, ComputerName, ParentImage, Image, CommandLine, User
-```
-
-**CLI — หาไฟล์ PHP ที่สร้างใหม่ใน web root (ไม่มีใน Git):**
-```bash
-find /var/www/html -name "*.php" -newer /var/www/html/index.php -not -path "*/.git/*" -exec ls -la {} \;
-```
-
-**CLI — ค้นหา web shell signature ใน PHP files:**
-```bash
-grep -rE "(eval\s*\(|base64_decode\s*\(|system\s*\(|exec\s*\(|shell_exec\s*\(|passthru\s*\(|popen\s*\()" /var/www/html/ --include="*.php" -l
-```
-
-**CLI — ตรวจ ASPX web shell บน IIS:**
-```powershell
-Get-ChildItem -Path "C:\inetpub\wwwroot" -Recurse -Include "*.aspx","*.asp","*.ashx" | Where-Object {$_.LastWriteTime -gt (Get-Date).AddDays(-7)} | Select-Object FullName, LastWriteTime, Length
-```
-
-**Sysmon — ตรวจ outbound connection จาก web process (Event ID 3):**
-```spl
-index=sysmon EventCode=3
-| where (Image LIKE "%w3wp.exe%" OR Image LIKE "%httpd%") AND NOT (DestinationIp STARTSWITH "10." OR DestinationIp STARTSWITH "192.168.")
-| table _time, Image, DestinationIp, DestinationPort
-```
-
 ### Sub: ioc_list
 - **Web Shell filenames**: `c99.php`, `r57.php`, `WSO.php`, `b374k.php`, `shell.aspx`, `cmd.asp`, `info.php` (ถ้าสร้างใหม่)
 - **URI patterns**: request ไปยัง ไฟล์ `.php` ที่มี parameter `cmd=`, `exec=`, `c=`, `pass=`
@@ -89,20 +49,12 @@ index=sysmon EventCode=3
 - **Outbound connection**: web server process เปิด connection ไปยัง port 4444, 1337, 443 (non-HTTPS traffic)
 - **File with encoded content**: ไฟล์ PHP ที่มี `eval(base64_decode(...))` หรือ `eval(gzinflate(...))`
 
-### Sub: scope_analysis
-- ระบุ **web shell ทุก ตัว** บน server โดยใช้ LOKI scan: `python3 loki.py -p /var/www/html/`
-- ตรวจสอบ **web log** ว่า shell ถูก access ครั้งแรกเมื่อไหร่ และมีกี่ IP ที่ใช้งาน
-- วิเคราะห์ **command ที่ถูกรัน** ผ่าน shell: ดูจาก HTTP POST body ใน log หรือ auditd
-- ตรวจสอบว่ามี **lateral movement**: shell ถูกใช้ pivot ไปยัง server อื่นหรือไม่
-- ประเมิน **data exfiltration**: ไฟล์อะไรถูก read หรือ download ผ่าน shell
-- หา **initial access vector**: shell ถูก upload ผ่าน file upload, SQLi INTO OUTFILE, หรือ vulnerable plugin
-
 ## Phase: containment
 ### Sub: short_term
 1. **Isolate web server** จาก internet ทันที (หาก business impact ยอมรับได้): block port 80/443 ที่ Firewall
 2. **Rename/move web shell** ออกจาก web root เพื่อหยุด access แต่เก็บ evidence ไว้: `mv /var/www/html/shell.php /tmp/evidence/shell.php`
 3. **Block source IP** ของ attacker ที่ access web shell: `iptables -I INPUT -s <attacker_ip> -j DROP`
-4. **Kill process** ที่ spawn จาก web shell: `pkill -u www-data -f "nc\|bash -i\|python -c"`
+4. **Kill process** ที่ spawn จาก web shell: `pkill -u www-data -f "nc|bash -i|python -c"` (pkill -f ใช้ extended regex — ใช้ `|` ไม่ใช่ `\|`)
 5. **Terminate reverse shell connection**: `ss -tp | grep ESTABLISHED` และ kill connection ไปยัง C2
 6. **Reset credential** ทุกอย่างที่ web server เข้าถึงได้ (DB password, API key, service account)
 7. **ปิด write permission** ของ web root ชั่วคราว: `chmod -R a-w /var/www/html/`

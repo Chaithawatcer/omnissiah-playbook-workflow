@@ -40,63 +40,6 @@ source_doc: DNS_Tunneling_IR_Playbook_v1
 - **EDR DNS telemetry**: process → DNS query mapping
 - **NetFlow**: volume ของ DNS traffic (port 53 UDP/TCP) ผิดปกติจาก specific endpoint
 
-### Sub: detection_queries
-**Splunk — ตรวจ DNS query ที่มี subdomain ยาวผิดปกติ (DNS tunnel indicator):**
-```spl
-index=dns_logs query_type IN ("A","TXT","CNAME","MX")
-| eval subdomain_len = len(query)
-| where subdomain_len > 50
-| rex field=query "^(?P<subdomain>.+)\.(?P<tld>[^.]+\.[^.]+)$"
-| stats count, avg(subdomain_len) as avg_len by tld, src_ip
-| where count > 100
-| sort -count
-```
-
-**Splunk — ตรวจ high-frequency DNS query ไปยัง domain เดียว (beacon pattern):**
-```spl
-index=dns_logs
-| stats count by src_ip, query, _time span=1m
-| where count > 30
-| sort -count
-```
-
-**Splunk — ตรวจ TXT record query (มักใช้สำหรับ DNS tunnel C2):**
-```spl
-index=dns_logs query_type="TXT"
-| stats count by src_ip, query
-| where count > 10
-| sort -count
-```
-
-**Splunk — ตรวจ high entropy domain name (random-looking subdomain):**
-```spl
-index=dns_logs
-| eval entropy = -sum(map(lambda c: (freq(c, query)/len(query))*log((freq(c, query)/len(query)), 2), distinct_values(split(query, ""))))
-| where entropy > 3.5 AND len(query) > 40
-| table _time, src_ip, query, entropy
-```
-
-**CLI — ตรวจ DNS query log บน Windows DNS Server:**
-```powershell
-Get-Content "C:\Windows\System32\dns\dns.log" | Select-String -Pattern "TXT|CNAME" |
-  Where-Object {$_.ToString().Length -gt 200} |
-  Select-Object -Last 50
-```
-
-**Zeek CLI — ตรวจ suspicious DNS query จาก dns.log:**
-```bash
-zeek-cut query qtype_name < dns.log | awk '{print length($1), $0}' | sort -rn | head 30
-```
-
-**Splunk — ตรวจ endpoint ที่ query external DNS server โดยตรง (bypass internal):**
-```spl
-index=firewall dest_port=53
-| where dest_ip NOT IN ("10.0.0.53","192.168.1.1")
-| stats count by src_ip, dest_ip
-| where count > 50
-| sort -count
-```
-
 ### Sub: ioc_list
 - **Long subdomain length**: query ที่มี subdomain ยาว > 50 characters เช่น `aGVsbG8td29ybGQ.malicious.com`
 - **High query frequency**: > 100 queries/นาที ไปยัง domain เดียว จาก IP เดียว
@@ -105,14 +48,6 @@ index=firewall dest_port=53
 - **NXDOMAIN flood**: DNS query จำนวนมากที่ได้รับ NXDOMAIN (attacker probe domain ที่ยังไม่ register)
 - **TTL ต่ำมาก**: TTL < 30 วินาที บ่งบอก fast-flux สำหรับ C2 evasion
 - **Process**: `iodine`, `dnscat`, `dns2tcp`, `PowerDNS tunnel` process บน endpoint
-
-### Sub: scope_analysis
-- ระบุ **endpoint ทั้งหมด** ที่ query malicious domain (อาจมีหลายเครื่องติด malware เดียวกัน)
-- ตรวจสอบ **data volume** ที่ถูก exfil ผ่าน DNS: ดูจาก total bytes ใน DNS response
-- วิเคราะห์ **C2 domain** — เป็น DGA (Dynamic Generated Algorithm) หรือ hardcoded domain
-- ตรวจสอบ **DNS tunnel direction**: เป็น C2 (inbound command) หรือ data exfil (outbound)
-- ระบุ **protocol ที่ใช้ใน tunnel**: TXT record, CNAME, A record (แต่ละ technique มี bandwidth ต่างกัน)
-- ตรวจสอบว่า attacker bypass internal DNS โดย **query external resolver** (8.8.8.8) โดยตรง
 
 ## Phase: containment
 ### Sub: short_term
@@ -144,7 +79,7 @@ index=firewall dest_port=53
   ```powershell
   Get-Process | Where-Object {$_.Name -match "iodine|dnscat|dns2tcp"} | Stop-Process -Force
   ```
-- ตรวจสอบ **parent process** ของ DNS tunnel: `Get-Process <pid> | Select-Object Parent`
+- ตรวจสอบ **parent process** ของ DNS tunnel (จาก PID ที่พบ): `Get-CimInstance Win32_Process -Filter "ProcessId=<pid>" | Select-Object ProcessId, ParentProcessId, CommandLine`
 - Scan endpoint ด้วย **EDR/AV** เพื่อลบ malware ที่ implement DNS tunnel
 
 ### Sub: persistence_removal
