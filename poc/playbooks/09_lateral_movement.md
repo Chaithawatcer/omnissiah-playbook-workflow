@@ -50,16 +50,18 @@ source_doc: Lateral_Movement_IR_Playbook_v1
 - **Account**: Service account หรือ Domain Admin ถูกใช้บน machine ที่ไม่ควรมี (unusual workstation)
 
 ## Phase: containment
-### Sub: short_term
+### Sub: short_term_isolate_block [T1021.002, T1021.001]
 1. **Isolate machine ทุกเครื่อง** ที่ระบุว่า attacker เข้าถึง โดยย้ายเข้า quarantine VLAN
 2. **Block SMB (port 445) และ WMI (port 135, 49152-65535)** ระหว่าง workstation-to-workstation ที่ Firewall/switch ACL
-3. **Disable account** ที่ถูก compromise ซึ่งใช้ lateral movement: `Disable-ADAccount -Identity <username>`
-4. **Reset krbtgt password** หากสงสัยว่ามี Pass-the-Ticket หรือ Golden Ticket
-5. **Block RDP (port 3389)** จาก workstation ไปยัง workstation ชั่วคราว
-6. **Revoke Kerberos TGT** สำหรับ compromised account: Force re-authentication
-7. **ปิด PsExec/WMI remote execution** ผ่าน Group Policy สำหรับ non-admin machine
+3. **Block RDP (port 3389)** จาก workstation ไปยัง workstation ชั่วคราว
+4. **ปิด PsExec/WMI remote execution** ผ่าน Group Policy สำหรับ non-admin machine
 
-### Sub: long_term
+### Sub: short_term_credential [T1550.002]
+1. **Disable account** ที่ถูก compromise ซึ่งใช้ lateral movement: `Disable-ADAccount -Identity <username>`
+2. **Reset krbtgt password** หากสงสัยว่ามี Pass-the-Ticket หรือ Golden Ticket
+3. **Revoke Kerberos TGT** สำหรับ compromised account: Force re-authentication
+
+### Sub: long_term [T1550.002, T1021.002]
 - Implement **network micro-segmentation**: ไม่อนุญาต workstation-to-workstation communication
 - ใช้ **LAPS** เพื่อ randomize local admin password ป้องกัน lateral movement ด้วย same credential
 - Deploy **Privileged Access Workstation (PAW)** สำหรับ admin task เท่านั้น
@@ -74,7 +76,7 @@ source_doc: Lateral_Movement_IR_Playbook_v1
 - เก็บ **SMB/Zeek log** ที่แสดง lateral movement pattern
 
 ## Phase: eradication
-### Sub: process_removal
+### Sub: process_removal [T1021.002]
 - ลบ **psexesvc.exe** ที่อาจถูก drop บน target machine:
   ```powershell
   Get-ChildItem -Path C:\Windows -Name "psexesvc.exe" | Remove-Item -Force
@@ -85,13 +87,13 @@ source_doc: Lateral_Movement_IR_Playbook_v1
   ```
 - ลบ **service ที่สร้างโดย PSExec**: `sc.exe query | findstr PSEXESVC`
 
-### Sub: persistence_removal
+### Sub: persistence_removal [T1021.002, T1550.002]
 - ตรวจสอบ **new local user** ที่ attacker สร้างบน machine ที่ถูก pivot: `Get-LocalUser`
 - ลบ **scheduled task** ที่ถูกสร้างบน remote machine ผ่าน lateral movement
 - ตรวจสอบ **registry Run key** บนทุก machine ที่ถูก compromise
 - Reset **service account password** ที่ถูกใช้ในการ lateral movement
 
-### Sub: patching
+### Sub: patching [T1550.002, T1021.002]
 - อัปเดต **Windows** เพื่อ patch NTLM relay vulnerability (MS17-010, PrintNightmare ถ้ายังไม่ patch)
 - เปิด **SMB Signing** และ **LDAP Signing** ผ่าน Group Policy
 - ปิด **NTLM authentication** บน network level หากเป็นไปได้ (ใช้ Kerberos เท่านั้น)
@@ -109,5 +111,5 @@ source_doc: Lateral_Movement_IR_Playbook_v1
 - **Deploy LAPS** บนทุก workstation และ server ภายใน 30 วัน
 - Implement **network micro-segmentation** ด้วย VLAN หรือ host-based firewall
 - เพิ่ม **SIEM detection** สำหรับ Workstation-to-Workstation SMB และ explicit credential logon
-- ทำ **AD Tiering** และ enforce credential isolation ระหว่าง Tier
+- ทำ **AD Tiering** และ enforce credential isolation ระหว่าง Tier 
 - จัด **Purple Team exercise** เพื่อ validate detection ของ lateral movement technique

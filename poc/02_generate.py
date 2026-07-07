@@ -101,43 +101,82 @@ def load_technique_mapping() -> dict:
         return json.load(f)
 
 
-def query_rag(collection, query: str, phase: str, technique_ids: list[str], n_results: int = 5) -> list[str]:
+def query_rag(collection, query: str, phase: str, technique_ids: list[str],
+              n_results: int = 5, threat_name: str = None) -> list[dict]:
     """
-    ดึง chunks จาก ChromaDB ด้วย metadata filter (phase) + semantic similarity
-    แล้วนำมากรอง technique_id ด้วย Python
+    Tiered + labeled retrieval — จัดลำดับความน่าเชื่อถือของแหล่งเพื่อลด contamination:
+      - primary   : chunk ที่ตรงเทคนิค และ "สะอาด" = มาจาก playbook ของ threat นี้เอง
+                    หรือถูกแท็กระดับ Sub (technique_source == "sub") → ยึดเป็นแกน
+      - secondary : chunk ที่ตรงเทคนิค แต่มาจากเล่มอื่นแบบ broad (แท็กระดับเล่ม) → ใช้เสริม nuance
+      - fallback  : ดึง phase อย่างเดียว เฉพาะเมื่อ "ไม่มี" chunk ตรงเทคนิคเลย → ติดธงว่าไม่ยืนยันเทคนิค
+    คืน list ของ dict: {doc, threat_name, technique_ids, matched, tier}
+    """
+    def matched_techs(meta):
+        tstr = meta.get("technique_ids", "") or ""
+        return [t for t in technique_ids if t in tstr]
 
-    หมายเหตุ: ถ้าไม่พบ chunk ที่ตรง technique ในเฟสนี้ จะคืนค่าว่าง (ไม่มี fallback
-    แบบ phase-only อีกต่อไป) เพื่อให้ป้าย Zero-Day ทำงานตามจริง และกันไม่ให้ดึง
-    chunk ของ threat อื่นมาปนเงียบๆ
-    """
-    retrieved_docs = []
+    primary, secondary = [], []
     seen_ids = set()
-
-    where_filter = {"phase": {"$eq": phase}}
 
     try:
         results = collection.query(
             query_texts=[query],
-            n_results=30, # ดึงมาเผื่อกรอง
-            where=where_filter,
-            include=["documents", "metadatas"],  # ids ถูกคืนมาให้เสมอ ห้ามใส่ใน include (ChromaDB จะ error)
+            n_results=30,  # ดึงมาเผื่อกรอง
+            where={"phase": {"$eq": phase}},
+            include=["documents", "metadatas"],  # ChromaDB คืน ids ให้เสมออยู่แล้ว ห้ามใส่ "ids" ใน include (จะ error)
         )
         if results and results["documents"] and results["documents"][0]:
             for doc_id, doc, meta in zip(results["ids"][0], results["documents"][0], results["metadatas"][0]):
-                tech_ids_str = meta.get("technique_ids", "")
+                if doc_id in seen_ids:
+                    continue
+                m = matched_techs(meta)
+                if not m:
+                    continue  # ไม่ตรงเทคนิคเป้าหมาย → ตัดทิ้ง (กันเนื้อหาเล่มอื่นที่ไม่เกี่ยว)
+                seen_ids.add(doc_id)
+                item = {
+                    "doc": doc,
+                    "threat_name": meta.get("threat_name", "") or "",
+                    "technique_ids": meta.get("technique_ids", "") or "",
+                    "matched": m,
+                }
+                is_own = bool(threat_name) and item["threat_name"] == threat_name
+                is_precise = meta.get("technique_source") == "sub"
+                if is_own or is_precise:
+                    item["tier"] = "primary"
+                    primary.append(item)
+                else:
+                    item["tier"] = "secondary"
+                    secondary.append(item)
+    except Exception:
+        pass
 
-                # Check if any of the target technique_ids is in this chunk's technique_ids
-                if any(tech_id in tech_ids_str for tech_id in technique_ids):
-                    if doc_id not in seen_ids:
-                        seen_ids.add(doc_id)
-                        retrieved_docs.append(doc)
-                        if len(retrieved_docs) >= n_results:
-                            break
-    except Exception as e:
-        # ไม่ควรเงียบสนิท — ถ้า query พังจะได้เห็น (เดิมบั๊ก include=["ids"] ถูกกลืนตรงนี้)
-        console.print(f"[red]⚠️  query_rag error (phase={phase}): {e}[/red]")
+    # เลือก primary ให้เต็มก่อน แล้วค่อยเติม secondary จนครบโควตา
+    chosen = primary[:n_results]
+    if len(chosen) < n_results:
+        chosen += secondary[: n_results - len(chosen)]
 
-    return retrieved_docs[:n_results]
+    # fallback เฉพาะเมื่อไม่มี chunk ตรงเทคนิคเลย (ครองเทคนิคไม่ได้จริงๆ)
+    if not chosen:
+        try:
+            results = collection.query(
+                query_texts=[query],
+                n_results=min(3, n_results),
+                where={"phase": {"$eq": phase}},
+                include=["documents", "metadatas"],
+            )
+            if results and results["documents"] and results["documents"][0]:
+                for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+                    chosen.append({
+                        "doc": doc,
+                        "threat_name": (meta or {}).get("threat_name", "") or "",
+                        "technique_ids": (meta or {}).get("technique_ids", "") or "",
+                        "matched": [],
+                        "tier": "fallback",
+                    })
+        except Exception:
+            pass
+
+    return chosen[:n_results]
 
 
 def check_technique_coverage(collection, technique_ids: list[str]) -> list[str]:
@@ -171,7 +210,26 @@ def generate_section(model, section: dict, threat_name: str, technique_ids: list
     Input: fill instruction + retrieved chunks จาก RAG
     Output: Markdown content ของ Phase นั้น
     """
-    context = "\n\n---\n".join(retrieved_chunks) if retrieved_chunks else "ไม่พบข้อมูลที่เกี่ยวข้องใน Knowledge Base"
+    def _fmt(item):
+        # ติดป้ายที่มา + เทคนิคของแต่ละ chunk เพื่อให้ LLM เห็น provenance และกรองเองได้
+        return f"(threat={item.get('threat_name','')} | technique={item.get('technique_ids','')})\n{item.get('doc','')}"
+
+    primary_c = [c for c in retrieved_chunks if isinstance(c, dict) and c.get("tier") == "primary"]
+    secondary_c = [c for c in retrieved_chunks if isinstance(c, dict) and c.get("tier") == "secondary"]
+    fallback_c = [c for c in retrieved_chunks if isinstance(c, dict) and c.get("tier") == "fallback"]
+
+    parts = []
+    if primary_c:
+        parts.append("[ขั้นตอนหลัก — ยึดเป็นแกนของ playbook ต้องครอบคลุมให้ครบ]\n"
+                     + "\n\n---\n".join(_fmt(c) for c in primary_c))
+    if secondary_c:
+        parts.append("[บริบทเสริม — ใช้เพื่อปรับให้เข้ากับ threat เท่านั้น ห้ามยกเป็นขั้นตอนหลัก"
+                     " ถ้าเนื้อหาไม่เกี่ยวกับเทคนิคเป้าหมาย]\n"
+                     + "\n\n---\n".join(_fmt(c) for c in secondary_c))
+    if fallback_c:
+        parts.append("[บริบทกว้าง (ยังไม่ยืนยันว่าตรงเทคนิค) — ใช้ด้วยความระมัดระวัง]\n"
+                     + "\n\n---\n".join(_fmt(c) for c in fallback_c))
+    context = "\n\n".join(parts) if parts else "ไม่พบข้อมูลที่เกี่ยวข้องใน Knowledge Base"
 
     missing_note = ""
     if missing_techs:
@@ -192,8 +250,10 @@ def generate_section(model, section: dict, threat_name: str, technique_ids: list
 {context}
 
 **คำแนะนำ:**
-- ใช้ข้อมูลจาก Knowledge Base ด้านบนเป็นหลัก
-- ปรับแต่งให้เหมาะสมกับ threat "{threat_name}" โดยเฉพาะ
+- ยึด "ขั้นตอนหลัก" เป็นโครงของ playbook เสมอ และต้องครอบคลุมให้ครบ
+- ใช้ "บริบทเสริม"/"บริบทกว้าง" เฉพาะเพื่อปรับถ้อยคำและเพิ่มรายละเอียดให้เข้ากับ threat "{threat_name}" เท่านั้น
+- แต่ละ chunk มีป้าย (threat=... | technique=...) กำกับ — **ถ้าเนื้อหา chunk เป็นของเทคนิคที่ไม่อยู่ใน [{', '.join(technique_ids)}] ห้ามนำขั้นตอนนั้นมาใส่ playbook เด็ดขาด** (เช่นขั้นตอนขโมย/รีเซ็ต credential ที่ไม่เกี่ยวกับเทคนิคเป้าหมาย)
+- ปรับ nuance ให้เข้ากับลักษณะเฉพาะของ threat "{threat_name}" (เช่น worm ที่แพร่อัตโนมัติ ต้องเน้น containment ก่อน remediate)
 - อย่าเขียนทั่วไปเกินไป ให้เฉพาะเจาะจงกับ technique และ threat นี้
 - ถ้า Knowledge Base มีคำสั่ง CLI ให้ใส่ด้วย
 - เขียนเป็นภาษาไทย
@@ -368,14 +428,18 @@ def main():
                 phase=phase,
                 technique_ids=technique_ids,
                 n_results=args.n_chunks,
+                threat_name=threat_key,
             )
             progress.update(task, description=f"[cyan]Phase {phase}: retrieved {len(retrieved_chunks)} chunks...")
 
             # Step 2: LLM Generate
             content = generate_section(model, section, threat_key, technique_ids, retrieved_chunks, missing_techs)
-            
-            # ถ้าไม่ได้ข้อมูลจาก RAG เลย ให้แปะป้ายแจ้งเตือนไว้ต้นเนื้อหาของ Phase นั้น
-            if len(retrieved_chunks) == 0:
+
+            # แปะป้ายเตือนถ้าไม่มีข้อมูลเลย หรือได้มาเฉพาะ fallback (ครองเทคนิคไม่ได้)
+            only_fallback = bool(retrieved_chunks) and all(
+                isinstance(c, dict) and c.get("tier") == "fallback" for c in retrieved_chunks
+            )
+            if len(retrieved_chunks) == 0 or only_fallback:
                 content = "> ⚠️ **คำเตือน:** เนื้อหาส่วนนี้สร้างจากความรู้ทั่วไปของ AI โดยตรง (Zero-Day) เนื่องจากไม่พบข้อมูลในองค์ความรู้ (RAG)\n\n" + content
                 
             sections[phase] = content
