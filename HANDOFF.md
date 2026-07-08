@@ -122,7 +122,7 @@ Commit ที่เกี่ยวข้อง: `0616568` บน branch `test-ge
    - Tech stack / Scope / Roadmap อัพเดทตามจริง พร้อมสถานะ ✅/📋 ต่อรายการ
    - เพิ่มส่วน **TI Annotation 2 ระดับ** (ฉบับทางการสำหรับคนทั่วไป / ฉบับเทคนิคสำหรับ IT) เป็น output ตามแผน — retrieve ครั้งเดียว สั่ง LLM 2 รอบคนละ audience
    - เพิ่มตาราง **ประวัติการเปลี่ยนแปลงของสถาปัตยกรรม** ท้ายเอกสาร (ใช้อ้างใน proposal ได้)
-2. **เพิ่ม [poc/04_inspect_db.py](poc/04_inspect_db.py)** — Streamlit GUI เปิดดู ChromaDB: แท็บ Browse (filter ตาม threat/phase/technique_source ดู metadata+เนื้อหาเต็ม) + แท็บ Test RAG query (จำลอง query_rag ดู chunk ที่ดึงได้ + similarity) — รัน `streamlit run 04_inspect_db.py` ใน `poc/` (เพิ่ม `streamlit` ใน requirements.txt แล้ว)
+2. ทำ Streamlit GUI สำหรับเปิดดู ChromaDB ไว้ใช้ดูเองในเครื่อง (`poc/04_inspect_db.py` — **ไม่ push, อยู่ใน .gitignore**) ถ้าอยากใช้เหมือนกัน: `pip install streamlit` แล้วขอไฟล์ได้
 
 ### ออกแบบไว้แต่ยังไม่ implement (คุยกันแล้ว รอเคาะ)
 

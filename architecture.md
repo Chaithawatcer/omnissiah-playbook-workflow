@@ -610,7 +610,6 @@ Generated Output = Containment section ที่เฉพาะกับ T1190
 | **Document Format**     | Markdown (→ PDF ภายหลัง)          | รูปแบบ Output ของ Playbook                            | ✅ Markdown |
 | **Playbook Store**      | SQLite / JSON Files / Google Drive| เก็บ Pre-built Playbook ที่ Auto-saved แล้ว           | 📋 แผน |
 | **Frontend**            | Simple HTML Form / n8n Form Node  | UI สำหรับ Analyst ป้อน Input                         | 📋 แผน (ปัจจุบัน = CLI) |
-| **DB Inspector**        | Streamlit (`04_inspect_db.py`)    | GUI เปิดดู chunk + ทดสอบ RAG query                    | ✅ ใช้จริง |
 
 ---
 

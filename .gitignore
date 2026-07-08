@@ -27,3 +27,7 @@ __pycache__/
 # Omnissiah PoC — regenerable / generated artifacts (ไม่ต้อง push)
 poc/chroma_db/
 poc/output/
+
+# Local dev tools (ใช้ดูเองในเครื่อง ไม่ push)
+poc/04_inspect_db.py
+.claude/
