@@ -13,6 +13,7 @@ This is a 2-person project — the teammate pushes work between sessions. **At t
 
 1. `git fetch` + `git pull` on the current branch (`test-generate`) — if local generated artifacts (`poc/chroma_db/`) block the merge, stash/discard them; they're regenerable via `01_ingest.py`.
 2. **Read [HANDOFF.md](HANDOFF.md)** — it's the running log both teammates (and their Claude sessions) use to hand off work. Summarize new entries to the user before starting new work.
+2.5. **Check open GitHub Issues** (`gh issue list`) — the team splits work via Issues on this repo (labels: `system-1`/`system-2`/`kb-curation`/`adapter`/`docs`/`decision-needed`). When finishing work that closes an issue, reference it in the commit (`fix #N`). gh CLI is installed and authenticated as Chaithawatcer.
 3. If playbooks or ingest logic changed in the pull, re-run `python poc/01_ingest.py` before trusting any retrieval/generation results — the local ChromaDB is stale otherwise.
 
 **At the end of any session that changed code/docs/design decisions:** append a new entry to `HANDOFF.md` (never edit old entries — add a new section instead), then commit and push so the teammate sees it. Include: what was done, what was designed-but-not-implemented, open questions for the teammate, and next steps.

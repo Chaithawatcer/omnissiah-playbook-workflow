@@ -178,3 +178,20 @@ Trade-off ที่ยอมรับ: mapping ผิด → generation เส�
 ### สถานะ
 
 ระบบที่ 2 ยังเป็น 📋 แผน (ยังไม่ implement) — โครงหนักๆ ที่ต้อง reuse มีครบแล้วใน `00_fetch_misp.py`
+
+---
+
+## 2026-07-08 — ตั้ง GitHub Issues เป็นระบบแบ่งงานทีม + ร่าง proposal
+
+### ระบบแบ่งงาน
+
+ตกลงใช้ **GitHub Issues** บน repo นี้เป็นที่แบ่ง/ติดตามงาน — สร้างแล้ว **11 issues (#2–#12)** พร้อม labels (`system-1`, `system-2`, `kb-curation`, `decision-needed`, `adapter`, `docs`) และ milestone "Proposal + สอบโครงงาน 1"
+
+- ดูงานทั้งหมด: https://github.com/Chaithawatcer/omnissiah-playbook-workflow/issues
+- **เริ่มจาก `decision-needed` 2 อัน (#3 BF/RDP mapping ขัดกัน, #4 KB coverage 08/11 หาย) — ต้องคุยกันก่อนลงมืออย่างอื่น**
+- อยากรับงานไหน assign ตัวเองใน issue นั้น / commit ที่แก้ให้อ้าง issue เช่น `fix #7`
+- convention: HANDOFF.md = เล่าภาพรวมต่อ session / Issues = สถานะงานรายชิ้น
+
+### Proposal
+
+ร่างฉบับปรับตาม architecture v3 อยู่ที่ [proposal-draft.md](proposal-draft.md) — จุดเปลี่ยนหลัก: ขอบเขตข้อ 4 (3 input channels), ข้อ 6 (TI Annotation 2 ระดับ), ข้อ 7 (human review + ไม่ auto-remediate) — review แล้ว comment ใน issue #10
