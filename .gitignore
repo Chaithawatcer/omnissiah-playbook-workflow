@@ -19,3 +19,11 @@ temp/
 # Gemini CLI / Assistant files
 .gemini/
 .agents/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Omnissiah PoC — regenerable / generated artifacts (ไม่ต้อง push)
+poc/chroma_db/
+poc/output/

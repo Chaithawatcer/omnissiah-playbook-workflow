@@ -101,6 +101,55 @@ def load_technique_mapping() -> dict:
         return json.load(f)
 
 
+def load_threat_context(path: str, auto_approve: bool = False) -> dict:
+    """
+    โหลด threat_context.json ที่ได้จาก 00_fetch_misp.py (MISP → CTI)
+    - บังคับ human-in-the-loop: status ต้องเป็น 'approved' (เว้นแต่ --auto-approve)
+    - ใช้เฉพาะเทคนิคที่ approved == True
+    - ประกอบ intel_text (description + IOCs) ไว้ป้อนเข้า RAG context
+    คืน dict: {threat_name, technique_ids, severity, intel_text}
+    """
+    p = Path(path)
+    if not p.exists():
+        console.print(f"[red]❌ ไม่พบไฟล์ context: {p}[/red]")
+        sys.exit(1)
+    ctx = json.loads(p.read_text(encoding="utf-8"))
+
+    status = ctx.get("status", "pending")
+    if status != "approved" and not auto_approve:
+        console.print(
+            f"[red]❌ context ยังไม่ถูกอนุมัติ (status='{status}')[/red]\n"
+            "[yellow]   ต้องให้ human ยืนยัน mapping ก่อน: เปลี่ยน status เป็น 'approved'\n"
+            "   หรือรัน 00_fetch_misp.py --interactive หรือส่ง --auto-approve (ไม่แนะนำใน production)[/yellow]"
+        )
+        sys.exit(1)
+
+    technique_ids = [
+        m["technique_id"] for m in ctx.get("mapping", [])
+        if m.get("approved") and m.get("technique_id")
+    ]
+    if not technique_ids:
+        console.print("[red]❌ ไม่มีเทคนิคที่ถูกอนุมัติใน context[/red]")
+        sys.exit(1)
+
+    # ประกอบบริบทภัยคุกคามจริงจาก CTI (แทนบทบาทของ threat.md)
+    intel_lines = [f"**บริบทภัยคุกคามจาก CTI (MISP event {ctx.get('source',{}).get('misp_event_id','?')}):**",
+                   ctx.get("description", ctx.get("threat_name", ""))]
+    iocs = ctx.get("iocs", [])
+    if iocs:
+        intel_lines.append("**ตัวบ่งชี้การโจมตี (IOCs) ที่พบ:**")
+        for i in iocs[:25]:
+            comment = f" — {i['comment']}" if i.get("comment") else ""
+            intel_lines.append(f"- {i.get('type','')}: `{i.get('value','')}`{comment}")
+
+    return {
+        "threat_name": ctx.get("threat_name", "Unknown Threat"),
+        "technique_ids": technique_ids,
+        "severity": ctx.get("severity", "Medium"),
+        "intel_text": "\n".join(intel_lines),
+    }
+
+
 def query_rag(collection, query: str, phase: str, technique_ids: list[str],
               n_results: int = 5, threat_name: str = None) -> list[dict]:
     """
@@ -204,7 +253,8 @@ def check_technique_coverage(collection, technique_ids: list[str]) -> list[str]:
 
 
 def generate_section(model, section: dict, threat_name: str, technique_ids: list[str],
-                     retrieved_chunks: list[str], missing_techs: list[str] = None) -> str:
+                     retrieved_chunks: list[str], missing_techs: list[str] = None,
+                     intel_text: str = "") -> str:
     """
     สร้างเนื้อหา 1 Phase ด้วย LLM
     Input: fill instruction + retrieved chunks จาก RAG
@@ -240,12 +290,14 @@ def generate_section(model, section: dict, threat_name: str, technique_ids: list
             f"ให้เขียนเป็นแนวทางทั่วไปที่ระมัดระวัง และกำกับในตารางว่า '(ยังไม่ได้ตรวจสอบกับ KB)'\n"
         )
 
+    intel_block = f"\n{intel_text}\n" if intel_text else ""
+
     prompt = f"""
 {section['fill_instruction']}
 
 **Threat:** {threat_name}
 **MITRE ATT&CK Techniques:** {', '.join(technique_ids)}
-{missing_note}
+{intel_block}{missing_note}
 **ข้อมูลอ้างอิงจาก Knowledge Base (IR Playbook จริง):**
 {context}
 
@@ -334,7 +386,9 @@ def assemble_playbook(threat_name: str, severity: str, technique_ids: list[str],
 
 def main():
     parser = argparse.ArgumentParser(description="Omnissiah Playbook Generator")
-    parser.add_argument("--threat", type=str, help="ชื่อ threat เช่น 'WannaCry', 'Phishing'")
+    parser.add_argument("--threat", type=str, help="ชื่อ threat เช่น 'WannaCry', 'Phishing' (ใช้ technique_mapping.json)")
+    parser.add_argument("--context", type=str, help="path ไฟล์ threat_context.json จาก 00_fetch_misp.py (MISP/CTI)")
+    parser.add_argument("--auto-approve", action="store_true", help="ข้ามการเช็ค status=approved ของ context (ไม่แนะนำ)")
     parser.add_argument("--list", action="store_true", help="แสดงรายชื่อ threat ที่รองรับ")
     parser.add_argument("--n-chunks", type=int, default=5, help="จำนวน chunks ที่ดึงต่อ phase (default: 5)")
     args = parser.parse_args()
@@ -348,25 +402,34 @@ def main():
             console.print(f"  • [cyan]{threat}[/cyan] — {', '.join(info['technique_ids'])} ({info['severity']})")
         return
 
-    if not args.threat:
-        console.print("[red]❌ กรุณาระบุ --threat หรือใช้ --list เพื่อดูรายชื่อ[/red]")
+    # แหล่ง input: --context (MISP/CTI) มาก่อน แล้วค่อย --threat (static mapping)
+    intel_text = ""
+    if args.context:
+        ctx = load_threat_context(args.context, auto_approve=args.auto_approve)
+        threat_key = ctx["threat_name"]
+        technique_ids = ctx["technique_ids"]
+        severity = ctx["severity"]
+        intel_text = ctx["intel_text"]
+        console.print(f"[green]✅ โหลด context จาก MISP/CTI:[/green] [cyan]{args.context}[/cyan]")
+    elif args.threat:
+        # ค้นหา threat (case-insensitive)
+        threat_key = None
+        for key in mapping:
+            if key.lower() == args.threat.lower():
+                threat_key = key
+                break
+
+        if not threat_key:
+            console.print(f"[red]❌ ไม่พบ threat '{args.threat}' — ใช้ --list เพื่อดูรายชื่อ[/red]")
+            sys.exit(1)
+
+        threat_info = mapping[threat_key]
+        technique_ids = threat_info["technique_ids"]
+        severity = threat_info["severity"]
+    else:
+        console.print("[red]❌ กรุณาระบุ --threat, --context หรือใช้ --list[/red]")
         parser.print_help()
         sys.exit(1)
-
-    # ค้นหา threat (case-insensitive)
-    threat_key = None
-    for key in mapping:
-        if key.lower() == args.threat.lower():
-            threat_key = key
-            break
-
-    if not threat_key:
-        console.print(f"[red]❌ ไม่พบ threat '{args.threat}' — ใช้ --list เพื่อดูรายชื่อ[/red]")
-        sys.exit(1)
-
-    threat_info = mapping[threat_key]
-    technique_ids = threat_info["technique_ids"]
-    severity = threat_info["severity"]
 
     console.print(f"\n[bold cyan]🚀 Omnissiah Playbook Generator[/bold cyan]")
     console.print(f"🎯 Threat: [bold]{threat_key}[/bold]")
@@ -433,7 +496,8 @@ def main():
             progress.update(task, description=f"[cyan]Phase {phase}: retrieved {len(retrieved_chunks)} chunks...")
 
             # Step 2: LLM Generate
-            content = generate_section(model, section, threat_key, technique_ids, retrieved_chunks, missing_techs)
+            content = generate_section(model, section, threat_key, technique_ids, retrieved_chunks,
+                                       missing_techs, intel_text=intel_text)
 
             # แปะป้ายเตือนถ้าไม่มีข้อมูลเลย หรือได้มาเฉพาะ fallback (ครองเทคนิคไม่ได้)
             only_fallback = bool(retrieved_chunks) and all(
