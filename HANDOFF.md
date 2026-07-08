@@ -102,3 +102,44 @@ Flags เสริม: `--no-ai` (ข้าม AI mapping ใช้ galaxy อ�
 
 Commit ที่เกี่ยวข้อง: `0616568` บน branch `test-generate` (`feat: add MISP/CTI ingestion with AI mapping + human-in-the-loop`)
 `poc/chroma_db/` ถูกถอดออกจาก git tracking แล้ว (ยังอยู่ใน local, ignore ใน `.gitignore`) — ถ้า clone ใหม่ต้องรัน `python 01_ingest.py` ก่อนใช้งานเพื่อ build DB ใหม่
+
+---
+
+## 2026-07-08 — อัพเดท architecture.md + DB Inspector GUI + ออกแบบ 3-Input Adapters
+
+### บริบท
+
+เตรียมเขียน proposal ให้อาจารย์เซ็น — อัพเดท `architecture.md` ให้ตรงกับสถานะจริงของโปรเจกต์หลังงาน MISP/CTI + tiered retrieval + technique-centric playbooks ที่เข้ามาในรอบก่อนหน้า
+
+### สิ่งที่ทำ
+
+1. **อัพเดท [architecture.md](architecture.md)** (+134/−40):
+   - เปลี่ยนปรัชญาหลักจาก "Fully Automated" → "Automated Generation + Human-in-the-loop Approval"
+   - Layer 1 เขียนใหม่: input 3 ช่องทาง + 1 ทางสำรอง (User Report / SIEM Alert / IOC-CTI / Threat Name ตรง) → adapter คนละตัว → schema กลาง `threat_context.json` — เหตุผล "ทางหนีไฟ": 2 ระบบต่อกันหลวม ถ้า CTI layer พังยังเดโม generate ได้
+   - Layer 1.5 อัพเดทเป็น pipeline MISP จริง (`00_fetch_misp.py`) + schema เต็ม
+   - Layer 2 เพิ่มแหล่ง mapping 3 แบบ (galaxy/ai/manual) + แผน validate T-number ด้วย `mitreattack-python` (MITRE official) — MITRE Software objects เช่น WannaCry=`S0366` ดึง technique ได้ตรงๆ ลดงาน mapping มือ
+   - Layer 5 เพิ่มผลปรับจากการทดลองจริง: sub-technique tagging, Hybrid KB, tiered retrieval, กฎ "Fail loudly"
+   - Tech stack / Scope / Roadmap อัพเดทตามจริง พร้อมสถานะ ✅/📋 ต่อรายการ
+   - เพิ่มส่วน **TI Annotation 2 ระดับ** (ฉบับทางการสำหรับคนทั่วไป / ฉบับเทคนิคสำหรับ IT) เป็น output ตามแผน — retrieve ครั้งเดียว สั่ง LLM 2 รอบคนละ audience
+   - เพิ่มตาราง **ประวัติการเปลี่ยนแปลงของสถาปัตยกรรม** ท้ายเอกสาร (ใช้อ้างใน proposal ได้)
+2. **เพิ่ม [poc/04_inspect_db.py](poc/04_inspect_db.py)** — Streamlit GUI เปิดดู ChromaDB: แท็บ Browse (filter ตาม threat/phase/technique_source ดู metadata+เนื้อหาเต็ม) + แท็บ Test RAG query (จำลอง query_rag ดู chunk ที่ดึงได้ + similarity) — รัน `streamlit run 04_inspect_db.py` ใน `poc/` (เพิ่ม `streamlit` ใน requirements.txt แล้ว)
+
+### ออกแบบไว้แต่ยังไม่ implement (คุยกันแล้ว รอเคาะ)
+
+- **3-Input Adapters**: SIEM alert = parse ATT&CK tag ที่มากับ alert (deterministic), IOC = MISP lookup / VT / OTX enrichment (วนกลับเข้า pipeline `00_fetch_misp.py` เดิมได้), User report = reuse `ai_map_techniques()` + บังคับ human approve — ทุกทางเขียน `threat_context.json` เดียวกัน `02_generate.py` ไม่ต้องแก้
+- validate T-number ที่ AI เสนอด้วย `mitreattack-python` กันเลขแต่ง
+
+### ⚠️ จุดที่ต้องคุยกัน (พบตอน review งานรอบ `ed0a700`)
+
+1. **BF/RDP collision กลับมา**: `technique_mapping.json` แถว "Brute Force" ถูกเปลี่ยนกลับเป็น `[T1110.001, T1078, T1021.001]` — ขัดกับ frontmatter ใน `04_brute_force.md` ที่ยังเป็น `[T1110.001, T1110.003, T1078]` และชนกับ RDP Brute Force เหมือนก่อนแก้ใน `65f03e0` (ตั้งใจหรือเผลอ revert?)
+2. **08_data_exfiltration.md / 11_dns_tunneling.md ถูกลบ** โดยไม่มี technique-centric doc มาแทน — ตอนนี้ T1041/T1048/T1071.004/T1568 ไม่มี chunk ใน KB เลย → gen 2 threat นี้จะขึ้น Zero-Day warning ทุก phase และกระทบตัวเลข "15 threats" ที่จะเขียนใน proposal
+
+### Next steps
+
+- เคลียร์ ⚠️ 2 ข้อกับทีมก่อนเขียน proposal
+- รัน `01_ingest.py` ใหม่หลัง pull (playbook เปลี่ยนเยอะ DB เก่าไม่ตรงแล้ว)
+- เขียน proposal (สถานะ: ยังไม่เริ่ม)
+
+### Git
+
+Commit รอบนี้อยู่บน branch `test-generate` — ดู `git log` ล่าสุด

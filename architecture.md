@@ -4,9 +4,12 @@
 > โดยใช้ **RAG + LLM + Vector Database + n8n Workflow Automation**
 
 > [!IMPORTANT]
-> ระบบนี้เป็นแบบ **Fully Automated**
-> ผู้ใช้เพียงแค่ป้อน IOC หรือชื่อภัยคุกคาม ระบบจะค้นหา สร้าง และจัดเก็บ Playbook โดยอัตโนมัติ
+> ระบบใช้หลัก **Automated Generation + Human-in-the-loop Approval**
+> ผู้ใช้ป้อน CTI / Alert / Threat Name → ระบบ map เป็น MITRE Technique แล้ว **ให้คนอนุมัติ mapping ก่อนเสมอ** จากนั้นจึงค้นหา สร้าง และจัดเก็บ Playbook โดยอัตโนมัติ
 > โดย Pre-built Playbook Store จะเติบโตขึ้นเรื่อยๆ ทุกครั้งที่มีการโจมตีแบบใหม่เข้ามา
+>
+> *(v1 เคยออกแบบเป็น Fully Automated — ปรับเมื่อ ก.ค. 2569 ให้มี human gate ที่จุด mapping และจุด review; ดู [ประวัติการเปลี่ยนแปลง](#-ประวัติการเปลี่ยนแปลงของสถาปัตยกรรม) ท้ายเอกสาร
+> สถานะว่าส่วนไหน implement จริงแล้วใน PoC ดู [poc-architecture.md](poc-architecture.md))*
 
 ---
 
@@ -14,9 +17,11 @@
 
 ```mermaid
 graph TD
-    user["Analyst (Human)"] -- "1. ป้อน IOC/Threat Name + เลือก Flow" --> input["Input Form (n8n Webhook)"]
+    user["Analyst (Human)"] -- "1. Input: User Report / SIEM Alert / IOC-CTI / Threat Name" --> input["Input Adapters (Layer 1)"]
     input --> mapper["MITRE ATT&CK Mapping Engine"]
-    mapper --> flow_select{"เลือก Flow การทำงาน"}
+    mapper --> ctx["threat_context.json\n(schema กลาง: mapping + IOCs + status)"]
+    ctx --> approve{"🧑 Human Approve\nMapping?"}
+    approve -- "approved" --> flow_select{"เลือก Flow การทำงาน"}
     
     %% Urgent Flow (Fast Path)
     flow_select -- "A. Urgent Flow (ด่วน)" --> dedup_urg{"Deduplication Check\n(หา Verified หรือ Draft)"}
@@ -57,17 +62,34 @@ graph TD
 
 ### Layer 1 — Input Layer (ชั้นรับข้อมูล)
 
-ผู้ใช้ป้อนข้อมูลเพียง **2 ส่วน**:
+ระบบรับ Input ได้ **3 ช่องทาง + 1 ทางสำรอง** — แต่ละช่องทางมีระดับความชัดเจน (confidence) ไม่เท่ากัน จึงใช้ **adapter คนละตัว** แล้วหลอมเข้า schema กลางตัวเดียวกัน (`threat_context.json`) แทนการหาอัลกอริทึมเดียวครอบทุกทาง:
 
 ```mermaid
 graph TD
-    subgraph InputLayer ["Input Layer"]
-        ioc["IOC Feed\n(IP, File Hash, Domain, Alert, Log)"]
-        threat["Threat Name\n(Attack Technique, Malware, CVE, Campaign)"]
+    subgraph InputLayer ["Input Layer — 3 Adapters + Fallback"]
+        rpt["1. User Report\n(อาการดิบ เช่น 'CPU ช้า')"]
+        alert["2. SIEM/EDR Alert\n(มี ATT&CK tag ติดมาแล้ว)"]
+        ioc["3. IOC / CTI Feed\n(Hash, IP, Domain)"]
+        direct["(สำรอง) Threat Name ตรงๆ\n--threat 'WannaCry'"]
     end
-    ioc --> val["Input Validator & Classifier"]
-    threat --> val
+    rpt --> ad1["LLM Mapper (Gemini)\nเสนอ technique + confidence + เหตุผล"]
+    alert --> ad2["Tag Parser\n(deterministic — อ่าน tag ที่มากับ alert)"]
+    ioc --> ad3["MISP Galaxy Extractor\n+ TI Enrichment (VT/OTX)"]
+    ad1 --> ctx["threat_context.json\n(schema กลาง)"]
+    ad2 --> ctx
+    ad3 --> ctx
+    direct -- "ข้าม CTI layer (ทางหนีไฟ)" --> map2["technique_mapping.json lookup"]
 ```
+
+| ช่องทาง | ตัวแปลง → T-number | Confidence | Human Review |
+|---|---|---|---|
+| **User Report** (symptom) | LLM (Gemini) เสนอ technique พร้อมเหตุผล — แนวเดียวกับ MITRE TRAM | ต่ำ | **บังคับอนุมัติทุกรายการ** |
+| **SIEM/EDR Alert** | parse ATT&CK tag ที่ติดมากับ alert (Sigma `attack.tXXXX`, Elastic `threat.technique.id`, Defender `MitreTechniques`) | สูง | ยืนยันเร็วได้ (tag มาจากระบบ detection) |
+| **IOC / CTI** | MISP Galaxy tag / VirusTotal / AlienVault OTX enrichment | กลาง | galaxy = auto-approve, AI-เสริม = ต้องอนุมัติ |
+| **Threat Name ตรง** | lookup ตารางมือ `technique_mapping.json` | สูง (คนเขียนเอง) | ผ่านได้เลย |
+
+> [!NOTE]
+> **เหตุผลที่คงทางสำรอง (Threat Name ตรง) ไว้:** เป็น "ทางหนีไฟ" ของโปรเจกต์ — ระบบ 2 ส่วน (CTI ingestion / Playbook generation) ต่อกันแบบหลวม ถ้า CTI layer มีปัญหาก่อนวันสอบ ฝั่ง generate ยังเดโมได้ครบวงจรด้วย input มือ เพราะทุกทางบรรจบที่ engine ตัวเดียวกัน
 
 > [!WARNING]
 > **ข้อควรระวังเรื่อง IOC Input:**
@@ -78,9 +100,38 @@ graph TD
 
 ---
 
-### Layer 1.5 — IOC Pre-processing Layer (ชั้นเสริมคุณภาพ IOC ก่อน Mapping)
+### Layer 1.5 — CTI Ingestion & Normalization (✅ implement แล้วใน `poc/00_fetch_misp.py`)
 
-เพื่อแก้ปัญหา IOC ดิบที่ ambiguous (เช่น "CPU สูง") ซึ่งไม่สามารถ Map กับ MITRE Technique ได้โดยตรง ระบบจะเพิ่มชั้นประมวลผลก่อน Mapping Engine โดยอัตโนมัติ:
+ชั้นนี้ถูก implement จริงแล้ว (ก.ค. 2569) สำหรับช่องทาง CTI/MISP — เป็น stage ใหม่ที่วิ่ง **ก่อน** generator:
+
+```
+MISP event (live API / mock JSON)
+   → Galaxy extractor  : ดึง technique_id จาก Galaxy cluster + Tag (mitre-attack-pattern)
+   → AI mapper (Gemini) : เสนอ/เสริม technique; ถ้า Galaxy ว่าง → AI เสนอทั้งชุด
+   → merge              : galaxy = approved อัตโนมัติ, ai-only = ต้องคนอนุมัติ
+   → เขียน threat_context.json  (status = "pending")
+   → 🧑 human review (interactive CLI: a/all/none/add/rm/ok/q)
+   → อนุมัติ → AI enrichment เขียน description ละเอียดจาก technique + IOC ที่อนุมัติแล้ว
+   → status = "approved" → ส่งต่อ generator (02_generate.py --context <file>)
+```
+
+**Schema กลาง `threat_context.json` (หัวใจของการ normalize):**
+
+```jsonc
+{
+  "status": "pending" | "approved",   // gate หลัก — generator ปฏิเสธถ้ายังไม่ approved
+  "threat_name": "...", "severity": "...", "description": "...",
+  "source": { "type": "misp|mock|siem|user_report", ... },
+  "mapping": [ { "technique_id": "T1486", "source": "galaxy|ai|manual",
+                 "confidence": "high|medium|low", "reason": "...", "approved": true } ],
+  "iocs": [ { "type", "value", "category" } ],
+  "review": { "reviewed_by", "reviewed_at", "notes" }
+}
+```
+
+เฉพาะ `mapping[].approved == true` เท่านั้นที่ถูกส่งเป็น `technique_ids` เข้า generator — adapter ของอีก 2 ช่องทาง (User Report / SIEM Alert) จะเขียน schema เดียวกันนี้ (ยังไม่ implement)
+
+สำหรับ **User Report ที่กำกวม** (เช่น "CPU สูง") ใช้ LLM Enrichment ก่อน map:
 
 ```mermaid
 graph TD
@@ -135,7 +186,7 @@ Output เป็น JSON เท่านั้น:
 | **OTX AlienVault** | Context ของ IOC จากชุมชนนักวิเคราะห์ | Hash → Related Techniques + Campaign |
 
 > [!NOTE]
-> Layer 1.5 เป็น **Optional Enhancement** — ถ้า Input ที่รับเข้ามาเป็น IOC ที่มีโครงสร้างชัดเจนแล้ว (เช่น มี ATT&CK Tag จาก EDR/SIEM) ก็ข้ามขั้นตอนนี้ไปได้เลย Enrichment จะมีประโยชน์สูงสุดเมื่อรับ Raw Symptom เข้ามาโดยตรงจากผู้ใช้
+> ถ้า Input มี ATT&CK Tag ชัดเจนอยู่แล้ว (SIEM/EDR alert) ข้าม LLM Enrichment ได้เลย — Enrichment มีประโยชน์สูงสุดกับ Raw Symptom จากผู้ใช้ ซึ่งเป็นช่องทางเดียวที่ **บังคับ** ผ่าน human approve ทุกรายการ
 
 ---
 
@@ -161,6 +212,12 @@ graph TD
 > IOC เดียวกันอาจเกี่ยวข้องกับหลาย Technique ได้ เช่น Phishing email อาจ map ได้ทั้ง T1566 และ T1204
 > Threat เดียวกันยิ่ง map ได้หลาย Technique เช่น React2Shell → T1190, T1059, T1078, T1053, T1547
 > Mapping ต้อง ground ด้วยแหล่งข้อมูลจริง (ATT&CK, CTI Feed) **ไม่ใช่ให้ LLM เดา**
+
+**แหล่ง mapping ตามที่ implement/วางแผนจริง (ก.ค. 2569):**
+- `galaxy` — จาก MISP Galaxy cluster/Tag (อนุมัติอัตโนมัติ เพราะมาจาก CTI ที่คน curate แล้ว) ✅ implement แล้ว
+- `ai` — Gemini เสนอ พร้อม confidence + เหตุผล (**ต้องคนอนุมัติเสมอ**) ✅ implement แล้ว
+- `manual` — ตาราง `technique_mapping.json` (ทางหนีไฟ) ✅ ใช้งานมาแต่แรก
+- ทุก T-number ที่ AI เสนอควร validate กับข้อมูล MITRE จริงผ่าน **`mitreattack-python`** (official) หรือ ATT&CK STIX data (ใช้ offline ได้ — ปลอดภัยกว่าตอน demo) กันเลขที่แต่งขึ้นเอง — MITRE **Software objects** (เช่น WannaCry = `S0366`) ยังใช้ดึง technique ของมัลแวร์มีชื่อได้ตรงๆ ลดงาน mapping มือ (ยังไม่ implement)
 
 ---
 
@@ -364,10 +421,19 @@ graph TD
 
 | หัวข้อ | รายละเอียด |
 |--------|-----------|
-| **วิธี Chunk** | ตัดตาม heading/section ของเอกสาร (ไม่ใช่ fixed token) เก็บ list ขั้นตอนให้อยู่ก้อนเดียวกัน |
-| **Metadata ต่อ Chunk** | `phase` (prep/detect/contain/erad/recovery), `technique_id`, `source_doc`, `heading` |
+| **วิธี Chunk** | ตัดตาม heading/section ของเอกสาร (`## Phase:` / `### Sub:`) ไม่ใช่ fixed token — เก็บ list ขั้นตอนให้อยู่ก้อนเดียวกัน |
+| **Metadata ต่อ Chunk** | `phase`, `technique_ids`, `technique_source` (`sub`/`playbook`), `threat_name`, `source_doc`, `sub_process` |
 | **การ Filter** | ใช้ **metadata filter** (phase + technique) ร่วมกับ vector similarity — ไม่ใช่ similarity อย่างเดียว |
 | **ทำไมต้อง Filter** | กันไม่ให้ chunk ของ Containment โผล่ตอนกำลังเขียน Preparation แค่เพราะใกล้กันเชิงความหมาย |
+
+**การปรับ 3 อย่างจากผลทดลองจริง (ก.ค. 2569 — ✅ implement แล้วทั้งหมด):**
+
+1. **Sub-technique Tagging** — แท็ก technique ที่ระดับ `### Sub:` (`technique_source: sub`) ไม่ใช่แค่ระดับทั้งเล่ม เพราะทดลองพบว่า technique ที่แชร์ log source เดียวกัน (เช่น Sysmon Event ID เดียวกัน) ข้าม threat ทำให้ chunk ปนกันหนัก
+2. **Hybrid Knowledge Base** — KB มีเอกสาร 2 แบบผสมกัน: (ก) *threat-centric playbooks* (WannaCry, Phishing, ...) และ (ข) *technique-centric reference playbooks* (เล่มละ 1 technique เช่น `technique_T1486_...md`) สำหรับ technique ที่หลาย threat ใช้ร่วมกัน — ลดการเขียนเนื้อหาซ้ำซึ่งเป็นต้นเหตุของ retrieval collision
+3. **Tiered Retrieval** — ผล retrieve ถูกจัดชั้นก่อนส่งเข้า LLM: `primary` (chunk ของ threat เอง / แท็กระดับ Sub) → `secondary` (เล่มอื่นที่ technique ตรง ใช้เสริม nuance) → `fallback` (phase อย่างเดียว **ติดธงชัดว่ายังไม่ยืนยัน technique**) พร้อมป้าย provenance (`threat=... | technique=...`) กำกับทุก chunk ให้ LLM แยกแกนหลักกับบริบทเสริมเองได้
+
+> [!CAUTION]
+> **หลัก Fail loudly, not silently:** ถ้า technique ไม่มีข้อมูลใน KB เลย ระบบต้องขึ้น `⚠️ Knowledge Coverage Warning` / Zero-Day banner — **ห้าม** fallback แบบเงียบไปดึง chunk ของ threat อื่นมาแทน (เคยเป็นบั๊กจริง: fallback แบบ phase-only ทำให้ป้ายเตือนไม่เคยขึ้นทั้งที่ KB ไม่มีข้อมูล) fallback tier ปัจจุบันจึงต้องติดธงเสมอ
 
 **Technique Labels (Metadata) บน Phase Docs:**
 - แต่ละ Phase Document จะมี Metadata ระบุ Technique IDs ที่เกี่ยวข้อง
@@ -518,23 +584,33 @@ Generated Output = Containment section ที่เฉพาะกับ T1190
   - Lessons Learned `{{post_incident_summary}}`
   - Improvement Actions
 
+**Output เสริมที่วางแผนไว้ — TI Annotation 2 ระดับ (📋 แผน ยังไม่ implement):**
+เมื่อ CTI feed เข้ามา ระบบจะ generate คำอธิบายภัยคุกคาม 2 ฉบับจาก context เดียวกัน (retrieve ครั้งเดียว, สั่ง LLM 2 รอบด้วย prompt คนละ audience):
+
+| ฉบับ | กลุ่มเป้าหมาย | ลักษณะเนื้อหา |
+|---|---|---|
+| **ทางการ (Executive)** | ผู้บริหาร / คนทั่วไป | ภาษาอ่านง่าย ไม่มีศัพท์เทคนิค — ภัยคืออะไร กระทบอะไร ต้องทำอะไร |
+| **เทคนิค (Technical)** | ทีม IT / SOC | T-number, IOC, log source, คำสั่งตรวจสอบ — ผูกกับ playbook ฉบับเต็ม |
+
 ---
 
 ## Tech Stack ที่เลือกใช้
 
-| Component               | Technology                        | หน้าที่                                                |
-|-------------------------|-----------------------------------|-------------------------------------------------------|
-| **Workflow Engine**     | n8n (Self-hosted)                 | ควบคุม Flow ทั้งหมด + Per-Section Loop               |
-| **LLM**                | Gemini API / OpenAI               | Generate Playbook content ทีละ Section                |
-| **Vector Database**     | ChromaDB / Qdrant                 | เก็บ Embeddings ของ Procedures + Metadata Filter      |
-| **Embedding Model**     | text-embedding-004 / nomic-embed  | แปลงเอกสารเป็น Vector สำหรับ Similarity Search       |
-| **MITRE ATT&CK Data**  | STIX/TAXII API / Local JSON       | แหล่งข้อมูล Tactics & Techniques                      |
-| **Mapping Script**      | Python                            | Rule-based + Semantic Mapping Logic                   |
-| **Deduplication Logic** | Python / n8n Function Node        | ตรวจสอบ Technique ID ก่อน Generate                   |
-| **Template Parser**     | Python / n8n Function Node        | Parse Mastertemplate เป็น Slots + ประกอบกลับ           |
-| **Document Format**     | Markdown → PDF                   | รูปแบบ Output ของ Playbook                            |
-| **Playbook Store**      | SQLite / JSON Files / Google Drive| เก็บ Pre-built Playbook ที่ Auto-saved แล้ว           |
-| **Frontend**            | Simple HTML Form / n8n Form Node  | UI สำหรับ Analyst ป้อน Input                         |
+| Component               | Technology                        | หน้าที่                                                | สถานะ |
+|-------------------------|-----------------------------------|-------------------------------------------------------|-------|
+| **Workflow Engine**     | n8n (Self-hosted)                 | ควบคุม Flow ทั้งหมด + Per-Section Loop               | 📋 แผน |
+| **LLM**                | Gemini API (`gemini-flash-lite-latest`) | Generate Playbook + AI mapping + AI enrichment   | ✅ ใช้จริง |
+| **Vector Database**     | ChromaDB (cosine similarity)      | เก็บ Embeddings ของ Procedures + Metadata Filter      | ✅ ใช้จริง |
+| **Embedding Model**     | sentence-transformers `all-MiniLM-L6-v2` | แปลงเอกสารเป็น Vector — **รัน local ไม่พึ่ง API** | ✅ ใช้จริง |
+| **CTI Source**          | MISP (PyMISP) + mock JSON offline | ดึง event + Galaxy ATT&CK tag เป็น input จริง         | ✅ ใช้จริง (mock ทดสอบแล้ว, live ยังไม่เคยยิง) |
+| **MITRE ATT&CK Data**  | `mitreattack-python` / ATT&CK STIX (offline ได้) | validate T-number + ดึง technique ของ Software objects | 📋 แผน |
+| **Mapping Script**      | Python (`00_fetch_misp.py`)       | Galaxy extractor + AI mapper + human review CLI       | ✅ ใช้จริง |
+| **Deduplication Logic** | Python / n8n Function Node        | ตรวจสอบ Technique ID ก่อน Generate                   | 📋 แผน |
+| **Template Parser**     | Python (`02_generate.py`)         | Parse Mastertemplate เป็น Slots + ประกอบกลับ           | ✅ ใช้จริง |
+| **Document Format**     | Markdown (→ PDF ภายหลัง)          | รูปแบบ Output ของ Playbook                            | ✅ Markdown |
+| **Playbook Store**      | SQLite / JSON Files / Google Drive| เก็บ Pre-built Playbook ที่ Auto-saved แล้ว           | 📋 แผน |
+| **Frontend**            | Simple HTML Form / n8n Form Node  | UI สำหรับ Analyst ป้อน Input                         | 📋 แผน (ปัจจุบัน = CLI) |
+| **DB Inspector**        | Streamlit (`04_inspect_db.py`)    | GUI เปิดดู chunk + ทดสอบ RAG query                    | ✅ ใช้จริง |
 
 ---
 
@@ -677,15 +753,18 @@ graph TD
 
 | ขอบเขต                                                          | ✅ ในระบบ | ❌ นอกระบบ |
 |-----------------------------------------------------------------|----------|----------|
-| รับ Input แบบ Text (IOC / Threat Name)                          | ✅       |          |
-| Map กับ MITRE ATT&CK อัตโนมัติ                                  | ✅       |          |
+| รับ Input แบบ Text (User Report / IOC / Threat Name)            | ✅       |          |
+| รับ CTI จาก MISP (event + Galaxy ATT&CK tag)                    | ✅       |          |
+| รับ SIEM/EDR Alert แบบ export JSON (parse ATT&CK tag)           | ✅       |          |
+| Map กับ MITRE ATT&CK อัตโนมัติ + Human approve mapping          | ✅       |          |
 | RAG ดึง Context จาก Vector DB อัตโนมัติ (Filter by metadata)    | ✅       |          |
 | Deduplication Check ก่อน Generate                              | ✅       |          |
 | Per-Section Generation Loop (วน generate ทีละ section)         | ✅       |          |
 | Auto-save Playbook ที่ไม่ซ้ำลง Pre-built Store                  | ✅       |          |
 | Pre-built Store โตขึ้นเองทุกครั้งที่พบ Threat ใหม่              | ✅       |          |
 | Output เป็น Markdown / PDF                                      | ✅       |          |
-| เชื่อมต่อกับ SIEM โดยตรง (Real-time Alert Feed)                |          | ❌       |
+| TI Annotation 2 ระดับ (ฉบับทางการสำหรับคนทั่วไป + ฉบับเทคนิคสำหรับ IT) | ✅ (แผน) |     |
+| เชื่อมต่อกับ SIEM โดยตรงแบบ Real-time (streaming feed)          |          | ❌       |
 | Execute / Automate การแก้ไขระบบ (Remediation)                  |          | ❌       |
 | Human Validation ก่อน Auto-save (ถ้าต้องการ Quality Control)   |          | ❌ (Optional) |
 
@@ -693,16 +772,18 @@ graph TD
 
 ## Development Roadmap (ลำดับการพัฒนา)
 
-| Step | งาน | เสร็จเมื่อ | หมายเหตุ |
+| Step | งาน | เสร็จเมื่อ | สถานะ (8 ก.ค. 2569) |
 |------|------|-----------|----------|
 | **1** | ล็อค Mastertemplate + แตกเป็น Slot Structure | มี template ที่ threat-agnostic พร้อม slot markers | ✅ เสร็จแล้ว |
-| **2** | เตรียม Test Case + เกณฑ์วัด | มี gold-standard playbook ไว้เทียบ | ใช้ React2Shell เป็นเคสแรก |
-| **3** | Manual Fill Run (ไม่ใช้ Vector DB) | รู้ว่า prompt/template เวิร์คหรือต้องแก้ | ตอบคำถามแพงที่สุดของโปรเจกต์ |
-| **4** | สร้าง Retrieval Layer | retrieve ตรงกับที่คัดมือ | chunk + metadata + embed + filter eval |
-| **5** | ประกอบ Generation Loop เต็ม | ใส่ threat name แล้ว generate ได้ครบทั้งเล่ม | per-section loop + assembly |
-| **6** | Mapping Layer | ใส่ชื่อ threat แล้วได้ technique list | เริ่มจาก manual table ก่อน |
-| **7** | Human Review Gate + Save เข้า Library | มี playbook ผ่าน review ตัวแรกเข้า library | library เริ่มมีของให้ retrieve |
-| **8** | Scale | เพิ่ม threat / template / mapping | ค่อยขยายทีหลัง |
+| **2** | เตรียม Test Case + เกณฑ์วัด | มี test retrieval ยืนยัน metadata filter | ✅ เสร็จแล้ว (`03_test_retrieval.py` 6/6) |
+| **3** | Manual Fill Run (ไม่ใช้ Vector DB) | รู้ว่า prompt/template เวิร์คหรือต้องแก้ | ✅ ผ่านขั้นนี้มาแล้ว |
+| **4** | สร้าง Retrieval Layer | retrieve ตรงกับที่คัดมือ | ✅ เสร็จ + อัพเกรดเป็น tiered retrieval |
+| **5** | ประกอบ Generation Loop เต็ม | ใส่ threat name แล้ว generate ได้ครบทั้งเล่ม | ✅ เสร็จ (ทดสอบ end-to-end กับ WannaCry แล้ว) |
+| **6** | Mapping Layer | input จริงแปลงเป็น technique list ได้ | ✅ manual table + MISP/AI mapper (adapter ฝั่ง User Report / SIEM Alert ยังไม่ทำ) |
+| **7** | Human Review Gate | mapping ต้องผ่านคนอนุมัติก่อน generate | ✅ ฝั่ง mapping เสร็จ (`status=approved` gate) — ฝั่ง review ตัว playbook output + Store ยังไม่ทำ |
+| **8** | Knowledge Base Curation | ทุกเล่มแท็ก sub-technique + คน review เนื้อหา | 🔄 บางส่วน (WannaCry เต็ม + technique-centric 8 เล่ม; อีก ~12 เล่มรอแท็ก) |
+| **9** | n8n Orchestration + Playbook Store + PDLC | workflow อัตโนมัติเต็มรูป + Draft/Verified lifecycle | 📋 ยังไม่เริ่ม |
+| **10** | TI Annotation 2 ระดับ + Scale | สรุปทางการ/เทคนิคจาก CTI + เพิ่ม threat | 📋 ยังไม่เริ่ม |
 
 > [!TIP]
 > **วินัยที่ต้องถือตลอดทาง:**
@@ -713,5 +794,18 @@ graph TD
 
 ---
 
+## 📜 ประวัติการเปลี่ยนแปลงของสถาปัตยกรรม
+
+| เมื่อไหร่ | เปลี่ยนอะไร | ทำไม / หลักฐาน |
+|---|---|---|
+| **มิ.ย. 2569** | ออกแบบ v1: Fully Automated, 2 Flow (Urgent/Standard), Playbook Store + PDLC, Mastertemplate slot, Per-Section Loop, metadata filter | จากการออกแบบร่วมกับที่ปรึกษา — เริ่มจาก PoC เล็กตามคำแนะนำอาจารย์ |
+| **4 ก.ค. 2569** | หลัก **Fail loudly**: ตัด phase-only fallback, Coverage Warning / Zero-Day banner ต้องขึ้นจริง; เพิ่ม **sub-technique tagging**; แยก technique set ของ Brute Force ↔ RDP Brute Force | เจอบั๊กจริง (`include=["ids"]` + fallback เงียบ) ทำให้ filter ไม่เคยทำงานและป้ายเตือนไม่เคยขึ้น + ทดลองพบ chunk ปนข้าม threat (commit `65f03e0`) |
+| **6 ก.ค. 2569** | แยกเอกสาร **poc-architecture.md** (ของจริงในโค้ด) ออกจาก architecture.md (vision) | กันสับสนระหว่างสิ่งที่ implement แล้วกับแผนอนาคต (commit `a7a89ef`) |
+| **8 ก.ค. 2569** | **Hybrid KB**: เพิ่ม technique-centric reference playbooks 8 เล่ม + **Tiered Retrieval** (primary/secondary/fallback + provenance label) | แก้ root cause ของ retrieval collision — technique ที่หลาย threat แชร์กันถูกเขียนซ้ำหลายเล่ม (commit `ed0a700`) |
+| **8 ก.ค. 2569** | **CTI/MISP Ingestion Layer** + schema กลาง `threat_context.json` + **Human approval gate** (`status=approved`) ก่อน generate เสมอ — จุดนี้เปลี่ยนปรัชญาจาก "Fully Automated" เป็น "Human-in-the-loop" | เปลี่ยน input จากชื่อ threat พิมพ์มือเป็น CTI จริง โดยห้าม auto-generate จาก mapping ที่คนยังไม่เช็ค (commit `0616568`) |
+| **8 ก.ค. 2569** | ออกแบบ **3-Input Adapters** (User Report / SIEM Alert / IOC → schema กลาง), แผน validate T-number ด้วย `mitreattack-python`, แผน **TI Annotation 2 ระดับ** (ทางการ/เทคนิค) | ตอบโจทย์อาจารย์เรื่อง "ตัวแปลง input 3 แบบให้ map เป็น T-number ได้" — ยังเป็น design ยังไม่ลงมือ implement |
+
+---
+
 *จัดทำโดย: Omnissiah Project Team*  
-*อัปเดตล่าสุด: มิถุนายน 2569*
+*อัปเดตล่าสุด: 8 กรกฎาคม 2569*
