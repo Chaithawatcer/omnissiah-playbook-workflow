@@ -143,3 +143,24 @@ Commit ที่เกี่ยวข้อง: `0616568` บน branch `test-ge
 ### Git
 
 Commit รอบนี้อยู่บน branch `test-generate` — ดู `git log` ล่าสุด
+
+---
+
+## 2026-07-08 — ย้าย Human Approve Mapping ไปรวม Review Gate ท้าย (feedback อาจารย์)
+
+### บริบท
+
+อาจารย์ชี้ว่า human gate 2 จุด (อนุมัติ mapping ก่อน generate + review playbook หลัง generate) ทำให้งานคนซ้ำซ้อน → ปรับ design เหลือ **gate เดียวท้ายสุด**: pipeline วิ่งอัตโนมัติจนได้ playbook draft แล้ว reviewer ตรวจ mapping (พร้อมป้าย source/confidence ต่อรายการ) + เนื้อหา playbook พร้อมกันครั้งเดียว
+
+Trade-off ที่ยอมรับ: mapping ผิด → generation เสียเที่ยว (ต้นทุนต่ำ สั่ง regenerate ได้) / หลักที่ไม่เปลี่ยน: ไม่มี playbook เป็น Verified โดยไม่ผ่านคน, ไม่ auto-execute containment/eradication
+
+### สิ่งที่ทำ
+
+- อัพเดท `architecture.md` ทุกจุดที่เกี่ยว: header (v1→v2→v3), overview diagram (ตัด approve gate กลางทาง), Layer 1 (คอลัมน์ "ผลต่อ Review ท้าย"), Layer 1.5 (pipeline ใหม่ + ⚠️ โค้ดยังเป็น v2), Layer 2, roadmap step 7, changelog
+
+### ⚠️ งานที่ตามมา (ยังไม่ทำ — โค้ดยังเป็น design v2)
+
+`00_fetch_misp.py` ยัง review ก่อน generate (interactive CLI + `status=pending` gate ใน `02_generate.py`) — ต้องปรับ:
+1. auto-chain เป็น default (mapping ทุกรายการวิ่งผ่านพร้อมป้าย ไม่หยุดรอคน)
+2. ป้าย source/confidence ของ mapping ต้องติดไปกับ playbook output ให้ reviewer เห็นตอนตรวจ
+3. ย้ายจุดบันทึก `review.reviewed_by/reviewed_at` ไปหลัง generate

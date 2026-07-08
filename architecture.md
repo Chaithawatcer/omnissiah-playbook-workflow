@@ -4,11 +4,11 @@
 > โดยใช้ **RAG + LLM + Vector Database + n8n Workflow Automation**
 
 > [!IMPORTANT]
-> ระบบใช้หลัก **Automated Generation + Human-in-the-loop Approval**
-> ผู้ใช้ป้อน CTI / Alert / Threat Name → ระบบ map เป็น MITRE Technique แล้ว **ให้คนอนุมัติ mapping ก่อนเสมอ** จากนั้นจึงค้นหา สร้าง และจัดเก็บ Playbook โดยอัตโนมัติ
+> ระบบใช้หลัก **Automated Generation + Single Human Review Gate**
+> ผู้ใช้ป้อน CTI / Alert / Threat Name → ระบบ map เป็น MITRE Technique (ติดป้าย source + confidence) → generate Playbook อัตโนมัติทันที → **คนตรวจครั้งเดียวตอนท้าย** (เห็น mapping + เนื้อหา playbook พร้อมกัน) ก่อนบันทึกเป็น Verified
 > โดย Pre-built Playbook Store จะเติบโตขึ้นเรื่อยๆ ทุกครั้งที่มีการโจมตีแบบใหม่เข้ามา
 >
-> *(v1 เคยออกแบบเป็น Fully Automated — ปรับเมื่อ ก.ค. 2569 ให้มี human gate ที่จุด mapping และจุด review; ดู [ประวัติการเปลี่ยนแปลง](#-ประวัติการเปลี่ยนแปลงของสถาปัตยกรรม) ท้ายเอกสาร
+> *(v1 = Fully Automated → v2 (ก.ค. 2569) เพิ่ม human gate 2 จุด (mapping + review) → v3 (8 ก.ค. 2569, feedback อาจารย์) รวมเหลือ gate เดียวท้ายสุด กันงานคนซ้ำซ้อน; ดู [ประวัติการเปลี่ยนแปลง](#-ประวัติการเปลี่ยนแปลงของสถาปัตยกรรม) ท้ายเอกสาร
 > สถานะว่าส่วนไหน implement จริงแล้วใน PoC ดู [poc-architecture.md](poc-architecture.md))*
 
 ---
@@ -19,9 +19,8 @@
 graph TD
     user["Analyst (Human)"] -- "1. Input: User Report / SIEM Alert / IOC-CTI / Threat Name" --> input["Input Adapters (Layer 1)"]
     input --> mapper["MITRE ATT&CK Mapping Engine"]
-    mapper --> ctx["threat_context.json\n(schema กลาง: mapping + IOCs + status)"]
-    ctx --> approve{"🧑 Human Approve\nMapping?"}
-    approve -- "approved" --> flow_select{"เลือก Flow การทำงาน"}
+    mapper --> ctx["threat_context.json\n(mapping ติดป้าย source + confidence\nไม่ต้องรอคนอนุมัติ — ตรวจรวมตอนท้าย)"]
+    ctx --> flow_select{"เลือก Flow การทำงาน"}
     
     %% Urgent Flow (Fast Path)
     flow_select -- "A. Urgent Flow (ด่วน)" --> dedup_urg{"Deduplication Check\n(หา Verified หรือ Draft)"}
@@ -43,7 +42,7 @@ graph TD
     dedup_std -- "MISS (ไม่มี/มีแค่ Draft)" --> parse_std["Parse Mastertemplate\n(Static File)"]
     parse_std --> loop_std["Per-Section Generation Loop\n(RAG จาก Vector DB + LLM)"]
     loop_std --> assemble_std["Assemble Playbook (Draft)"]
-    assemble_std --> review_gate{"Human Review & Test Gate\n(n8n Form / Human Approve)"}
+    assemble_std --> review_gate{"Human Review Gate (จุดเดียว)\nตรวจ mapping + playbook พร้อมกัน\n(n8n Form / Human Approve)"}
     
     queue_rev --> review_gate
     
@@ -81,12 +80,15 @@ graph TD
     direct -- "ข้าม CTI layer (ทางหนีไฟ)" --> map2["technique_mapping.json lookup"]
 ```
 
-| ช่องทาง | ตัวแปลง → T-number | Confidence | Human Review |
+| ช่องทาง | ตัวแปลง → T-number | Confidence | ผลต่อ Review ท้าย |
 |---|---|---|---|
-| **User Report** (symptom) | LLM (Gemini) เสนอ technique พร้อมเหตุผล — แนวเดียวกับ MITRE TRAM | ต่ำ | **บังคับอนุมัติทุกรายการ** |
-| **SIEM/EDR Alert** | parse ATT&CK tag ที่ติดมากับ alert (Sigma `attack.tXXXX`, Elastic `threat.technique.id`, Defender `MitreTechniques`) | สูง | ยืนยันเร็วได้ (tag มาจากระบบ detection) |
-| **IOC / CTI** | MISP Galaxy tag / VirusTotal / AlienVault OTX enrichment | กลาง | galaxy = auto-approve, AI-เสริม = ต้องอนุมัติ |
-| **Threat Name ตรง** | lookup ตารางมือ `technique_mapping.json` | สูง (คนเขียนเอง) | ผ่านได้เลย |
+| **User Report** (symptom) | LLM (Gemini) เสนอ technique พร้อมเหตุผล — แนวเดียวกับ MITRE TRAM | ต่ำ | mapping ติดธง 🔴 ให้ reviewer ตรวจเข้มสุด |
+| **SIEM/EDR Alert** | parse ATT&CK tag ที่ติดมากับ alert (Sigma `attack.tXXXX`, Elastic `threat.technique.id`, Defender `MitreTechniques`) | สูง | ตรวจผ่านเร็ว (tag มาจากระบบ detection) |
+| **IOC / CTI** | MISP Galaxy tag / VirusTotal / AlienVault OTX enrichment | กลาง | galaxy = น่าเชื่อถือ, AI-เสริม = ติดธงให้ตรวจ |
+| **Threat Name ตรง** | lookup ตารางมือ `technique_mapping.json` | สูง (คนเขียนเอง) | ตรวจผ่านเร็ว |
+
+> [!NOTE]
+> **Human review มีจุดเดียว — ท้าย pipeline** (feedback อาจารย์ 8 ก.ค. 2569): mapping ไม่ต้องรอคนอนุมัติก่อน generate — ระบบวิ่งอัตโนมัติจนได้ playbook draft แล้ว reviewer เห็น mapping (พร้อมป้าย source/confidence ต่อรายการ) คู่กับเนื้อหา playbook ตรวจครั้งเดียว กันงานคนซ้ำซ้อน ความเสี่ยงที่ยอมรับ: ถ้า mapping ผิด generation เสียเที่ยว (ต้นทุนต่ำ สั่ง regenerate ได้) — หลักที่ไม่เปลี่ยน: **ไม่มี playbook ใดเป็น Verified โดยไม่ผ่านคน**
 
 > [!NOTE]
 > **เหตุผลที่คงทางสำรอง (Threat Name ตรง) ไว้:** เป็น "ทางหนีไฟ" ของโปรเจกต์ — ระบบ 2 ส่วน (CTI ingestion / Playbook generation) ต่อกันแบบหลวม ถ้า CTI layer มีปัญหาก่อนวันสอบ ฝั่ง generate ยังเดโมได้ครบวงจรด้วย input มือ เพราะทุกทางบรรจบที่ engine ตัวเดียวกัน
@@ -108,18 +110,21 @@ graph TD
 MISP event (live API / mock JSON)
    → Galaxy extractor  : ดึง technique_id จาก Galaxy cluster + Tag (mitre-attack-pattern)
    → AI mapper (Gemini) : เสนอ/เสริม technique; ถ้า Galaxy ว่าง → AI เสนอทั้งชุด
-   → merge              : galaxy = approved อัตโนมัติ, ai-only = ต้องคนอนุมัติ
-   → เขียน threat_context.json  (status = "pending")
-   → 🧑 human review (interactive CLI: a/all/none/add/rm/ok/q)
-   → อนุมัติ → AI enrichment เขียน description ละเอียดจาก technique + IOC ที่อนุมัติแล้ว
-   → status = "approved" → ส่งต่อ generator (02_generate.py --context <file>)
+   → merge              : ทุกรายการติดป้าย source (galaxy/ai/manual) + confidence
+   → เขียน threat_context.json → AI enrichment เขียน description
+   → ส่งต่อ generator ทันที (02_generate.py --context <file>) — ไม่หยุดรอคน
+   → 🧑 human review ครั้งเดียวตอนท้าย: reviewer เห็น mapping + playbook draft พร้อมกัน
+   → approve → บันทึกเป็น Verified / แก้ mapping → regenerate
 ```
+
+> [!WARNING]
+> **โค้ดปัจจุบันยังไม่ตรง design นี้** — `00_fetch_misp.py` (commit `0616568`) ยัง review ก่อน generate (interactive CLI + `status=pending` gate) ตาม design v2 เดิม งานที่ต้องปรับ: ทำ auto-chain เป็น default, ย้ายจุดบันทึก review ไปหลัง generate
 
 **Schema กลาง `threat_context.json` (หัวใจของการ normalize):**
 
 ```jsonc
 {
-  "status": "pending" | "approved",   // gate หลัก — generator ปฏิเสธถ้ายังไม่ approved
+  "status": "pending" | "approved",   // ผล review ท้าย — playbook คงสถานะ Draft จนกว่าคน approve
   "threat_name": "...", "severity": "...", "description": "...",
   "source": { "type": "misp|mock|siem|user_report", ... },
   "mapping": [ { "technique_id": "T1486", "source": "galaxy|ai|manual",
@@ -129,7 +134,7 @@ MISP event (live API / mock JSON)
 }
 ```
 
-เฉพาะ `mapping[].approved == true` เท่านั้นที่ถูกส่งเป็น `technique_ids` เข้า generator — adapter ของอีก 2 ช่องทาง (User Report / SIEM Alert) จะเขียน schema เดียวกันนี้ (ยังไม่ implement)
+Generator ใช้ mapping ทุกรายการ (ป้าย source/confidence ติดไปกับ output ให้ reviewer เห็น) — reviewer ตัด/แก้รายการที่ผิดตอน review ท้าย ก่อนบันทึก Verified — adapter ของอีก 2 ช่องทาง (User Report / SIEM Alert) จะเขียน schema เดียวกันนี้ (ยังไม่ implement)
 
 สำหรับ **User Report ที่กำกวม** (เช่น "CPU สูง") ใช้ LLM Enrichment ก่อน map:
 
@@ -186,7 +191,7 @@ Output เป็น JSON เท่านั้น:
 | **OTX AlienVault** | Context ของ IOC จากชุมชนนักวิเคราะห์ | Hash → Related Techniques + Campaign |
 
 > [!NOTE]
-> ถ้า Input มี ATT&CK Tag ชัดเจนอยู่แล้ว (SIEM/EDR alert) ข้าม LLM Enrichment ได้เลย — Enrichment มีประโยชน์สูงสุดกับ Raw Symptom จากผู้ใช้ ซึ่งเป็นช่องทางเดียวที่ **บังคับ** ผ่าน human approve ทุกรายการ
+> ถ้า Input มี ATT&CK Tag ชัดเจนอยู่แล้ว (SIEM/EDR alert) ข้าม LLM Enrichment ได้เลย — Enrichment มีประโยชน์สูงสุดกับ Raw Symptom จากผู้ใช้ ซึ่ง mapping จะติดธง confidence ต่ำให้ reviewer ตรวจเข้มสุดตอน review ท้าย
 
 ---
 
@@ -214,8 +219,8 @@ graph TD
 > Mapping ต้อง ground ด้วยแหล่งข้อมูลจริง (ATT&CK, CTI Feed) **ไม่ใช่ให้ LLM เดา**
 
 **แหล่ง mapping ตามที่ implement/วางแผนจริง (ก.ค. 2569):**
-- `galaxy` — จาก MISP Galaxy cluster/Tag (อนุมัติอัตโนมัติ เพราะมาจาก CTI ที่คน curate แล้ว) ✅ implement แล้ว
-- `ai` — Gemini เสนอ พร้อม confidence + เหตุผล (**ต้องคนอนุมัติเสมอ**) ✅ implement แล้ว
+- `galaxy` — จาก MISP Galaxy cluster/Tag (น่าเชื่อถือ — มาจาก CTI ที่คน curate แล้ว) ✅ implement แล้ว
+- `ai` — Gemini เสนอ พร้อม confidence + เหตุผล (ติดธงให้ reviewer ตรวจตอน review ท้าย) ✅ implement แล้ว
 - `manual` — ตาราง `technique_mapping.json` (ทางหนีไฟ) ✅ ใช้งานมาแต่แรก
 - ทุก T-number ที่ AI เสนอควร validate กับข้อมูล MITRE จริงผ่าน **`mitreattack-python`** (official) หรือ ATT&CK STIX data (ใช้ offline ได้ — ปลอดภัยกว่าตอน demo) กันเลขที่แต่งขึ้นเอง — MITRE **Software objects** (เช่น WannaCry = `S0366`) ยังใช้ดึง technique ของมัลแวร์มีชื่อได้ตรงๆ ลดงาน mapping มือ (ยังไม่ implement)
 
@@ -779,7 +784,7 @@ graph TD
 | **4** | สร้าง Retrieval Layer | retrieve ตรงกับที่คัดมือ | ✅ เสร็จ + อัพเกรดเป็น tiered retrieval |
 | **5** | ประกอบ Generation Loop เต็ม | ใส่ threat name แล้ว generate ได้ครบทั้งเล่ม | ✅ เสร็จ (ทดสอบ end-to-end กับ WannaCry แล้ว) |
 | **6** | Mapping Layer | input จริงแปลงเป็น technique list ได้ | ✅ manual table + MISP/AI mapper (adapter ฝั่ง User Report / SIEM Alert ยังไม่ทำ) |
-| **7** | Human Review Gate | mapping ต้องผ่านคนอนุมัติก่อน generate | ✅ ฝั่ง mapping เสร็จ (`status=approved` gate) — ฝั่ง review ตัว playbook output + Store ยังไม่ทำ |
+| **7** | Human Review Gate (จุดเดียวท้าย pipeline) | reviewer ตรวจ mapping + playbook พร้อมกันก่อนบันทึก Verified | 🔄 ปรับ design ตาม feedback อาจารย์ (8 ก.ค.) — โค้ด gate ก่อน generate มีแล้ว ต้องย้ายไปท้าย; ฝั่ง review playbook + Store ยังไม่ทำ |
 | **8** | Knowledge Base Curation | ทุกเล่มแท็ก sub-technique + คน review เนื้อหา | 🔄 บางส่วน (WannaCry เต็ม + technique-centric 8 เล่ม; อีก ~12 เล่มรอแท็ก) |
 | **9** | n8n Orchestration + Playbook Store + PDLC | workflow อัตโนมัติเต็มรูป + Draft/Verified lifecycle | 📋 ยังไม่เริ่ม |
 | **10** | TI Annotation 2 ระดับ + Scale | สรุปทางการ/เทคนิคจาก CTI + เพิ่ม threat | 📋 ยังไม่เริ่ม |
@@ -803,6 +808,7 @@ graph TD
 | **8 ก.ค. 2569** | **Hybrid KB**: เพิ่ม technique-centric reference playbooks 8 เล่ม + **Tiered Retrieval** (primary/secondary/fallback + provenance label) | แก้ root cause ของ retrieval collision — technique ที่หลาย threat แชร์กันถูกเขียนซ้ำหลายเล่ม (commit `ed0a700`) |
 | **8 ก.ค. 2569** | **CTI/MISP Ingestion Layer** + schema กลาง `threat_context.json` + **Human approval gate** (`status=approved`) ก่อน generate เสมอ — จุดนี้เปลี่ยนปรัชญาจาก "Fully Automated" เป็น "Human-in-the-loop" | เปลี่ยน input จากชื่อ threat พิมพ์มือเป็น CTI จริง โดยห้าม auto-generate จาก mapping ที่คนยังไม่เช็ค (commit `0616568`) |
 | **8 ก.ค. 2569** | ออกแบบ **3-Input Adapters** (User Report / SIEM Alert / IOC → schema กลาง), แผน validate T-number ด้วย `mitreattack-python`, แผน **TI Annotation 2 ระดับ** (ทางการ/เทคนิค) | ตอบโจทย์อาจารย์เรื่อง "ตัวแปลง input 3 แบบให้ map เป็น T-number ได้" — ยังเป็น design ยังไม่ลงมือ implement |
+| **8 ก.ค. 2569** | **ย้าย Human Approve Mapping ไปรวมกับ Review Gate ท้ายสุด** (v3) — เหลือ human gate จุดเดียว: reviewer เห็น mapping (ป้าย source/confidence) + playbook draft พร้อมกัน ตรวจครั้งเดียว | feedback อาจารย์: gate 2 จุดทำให้งานคนซ้ำซ้อน — generation ต้นทุนต่ำ ปล่อยรันก่อนแล้วตรวจรวมคุ้มกว่า (โค้ด `00_fetch_misp.py` ยังเป็นแบบ v2 รอปรับ) |
 
 ---
 
