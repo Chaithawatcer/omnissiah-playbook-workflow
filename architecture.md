@@ -21,6 +21,8 @@ graph TD
     input --> mapper["MITRE ATT&CK Mapping Engine"]
     mapper --> ctx["threat_context.json\n(mapping ติดป้าย source + confidence\nไม่ต้องรอคนอนุมัติ — ตรวจรวมตอนท้าย)"]
     ctx --> flow_select{"เลือก Flow การทำงาน"}
+    ctx --> ti_annot["ระบบที่ 2: TI Feed Annotation\n(สรุป 2 ระดับจาก context เดียวกัน)"]
+    ti_annot --> ti_out["TI Advisory\nฉบับทางการ (คนทั่วไป) + ฉบับเทคนิค (IT)"]
     
     %% Urgent Flow (Fast Path)
     flow_select -- "A. Urgent Flow (ด่วน)" --> dedup_urg{"Deduplication Check\n(หา Verified หรือ Draft)"}
@@ -91,7 +93,8 @@ graph TD
 > **Human review มีจุดเดียว — ท้าย pipeline** (feedback อาจารย์ 8 ก.ค. 2569): mapping ไม่ต้องรอคนอนุมัติก่อน generate — ระบบวิ่งอัตโนมัติจนได้ playbook draft แล้ว reviewer เห็น mapping (พร้อมป้าย source/confidence ต่อรายการ) คู่กับเนื้อหา playbook ตรวจครั้งเดียว กันงานคนซ้ำซ้อน ความเสี่ยงที่ยอมรับ: ถ้า mapping ผิด generation เสียเที่ยว (ต้นทุนต่ำ สั่ง regenerate ได้) — หลักที่ไม่เปลี่ยน: **ไม่มี playbook ใดเป็น Verified โดยไม่ผ่านคน**
 
 > [!NOTE]
-> **เหตุผลที่คงทางสำรอง (Threat Name ตรง) ไว้:** เป็น "ทางหนีไฟ" ของโปรเจกต์ — ระบบ 2 ส่วน (CTI ingestion / Playbook generation) ต่อกันแบบหลวม ถ้า CTI layer มีปัญหาก่อนวันสอบ ฝั่ง generate ยังเดโมได้ครบวงจรด้วย input มือ เพราะทุกทางบรรจบที่ engine ตัวเดียวกัน
+> **เหตุผลที่คงทางสำรอง (Threat Name ตรง) ไว้:** เป็น fallback ชั้นในสุด — ถ้า CTI layer มีปัญหา ฝั่ง generate ยังเดโมได้ครบวงจรด้วย input มือ
+> ส่วน **"ทางหนีไฟ" หลักของโปรเจกต์** คือการมี **2 ระบบที่จบในตัวเอง** แชร์ CTI ingestion เดียวกัน (Playbook Generator / TI Feed Annotation) — ถ้าระบบใดมีปัญหาก่อนสอบ อีกระบบยังเดโมได้ ดูหัวข้อ **ระบบที่ 2 — TI Feed Annotation System** ด้านล่าง
 
 > [!WARNING]
 > **ข้อควรระวังเรื่อง IOC Input:**
@@ -589,13 +592,41 @@ Generated Output = Containment section ที่เฉพาะกับ T1190
   - Lessons Learned `{{post_incident_summary}}`
   - Improvement Actions
 
-**Output เสริมที่วางแผนไว้ — TI Annotation 2 ระดับ (📋 แผน ยังไม่ implement):**
-เมื่อ CTI feed เข้ามา ระบบจะ generate คำอธิบายภัยคุกคาม 2 ฉบับจาก context เดียวกัน (retrieve ครั้งเดียว, สั่ง LLM 2 รอบด้วย prompt คนละ audience):
+---
+
+## ระบบที่ 2 — TI Feed Annotation System (🔥 ทางหนีไฟของโปรเจกต์ — 📋 แผน)
+
+โปรเจกต์นี้ตั้งใจมี **2 ระบบที่จบในตัวเอง** แชร์ "หัว" เดียวกัน (CTI Ingestion + Mapping + `threat_context.json` จาก Layer 1–1.5) แล้วแยกเป็น 2 deliverable:
+
+- **ระบบที่ 1 — Playbook Generator** (Layer 2–5 ทั้งหมดข้างบน): สร้าง IR Playbook ฉบับเต็ม
+- **ระบบที่ 2 — TI Feed Annotation**: ทุกครั้งที่มี TI feed เข้ามา ระบบแปะคำอธิบาย **2 ระดับ** ให้อัตโนมัติ ว่าภัยที่ feed ขึ้นมาเกี่ยวกับอะไร
+
+```mermaid
+graph TD
+    feed["CTI Feed เข้ามา\n(MISP event / IOC / Alert)"] --> ingest["CTI Ingestion + Mapping\n(Layer 1–1.5 — ใช้ร่วมกัน 2 ระบบ)"]
+    ingest --> ctx["threat_context.json"]
+    ctx --> sys1["ระบบที่ 1\nPlaybook Generator\n(Layer 2–5)"]
+    ctx --> sys2["ระบบที่ 2\nTI Feed Annotation"]
+    sys2 --> exec["📰 ฉบับทางการ (Executive)\nภาษาคนทั่วไป ไม่มีศัพท์เทคนิค:\nภัยคืออะไร กระทบใคร องค์กรต้องทำอะไร"]
+    sys2 --> tech["🔧 ฉบับเทคนิค (Technical)\nสำหรับทีม IT/SOC:\nT-number, IOC, log source,\nคำสั่งตรวจสอบ + ลิงก์ไป playbook ฉบับเต็ม"]
+    sys1 --> pb["IR Playbook ฉบับเต็ม"]
+    tech -.->|อ้างอิงถึง| pb
+```
+
+**วิธีทำ (ใช้ของที่มีอยู่แล้วเกือบทั้งหมด):** จาก `threat_context.json` เดียวกัน (mapping + IOCs + description) → สั่ง LLM 2 รอบด้วย prompt คนละ audience — reuse pattern ของ `ai_enrich_description()` ใน `00_fetch_misp.py` ที่ implement แล้ว โดย ground กับ mapping/IOC ที่มีจริงเพื่อกัน hallucination เหมือนฝั่ง playbook
 
 | ฉบับ | กลุ่มเป้าหมาย | ลักษณะเนื้อหา |
 |---|---|---|
 | **ทางการ (Executive)** | ผู้บริหาร / คนทั่วไป | ภาษาอ่านง่าย ไม่มีศัพท์เทคนิค — ภัยคืออะไร กระทบอะไร ต้องทำอะไร |
 | **เทคนิค (Technical)** | ทีม IT / SOC | T-number, IOC, log source, คำสั่งตรวจสอบ — ผูกกับ playbook ฉบับเต็ม |
+
+**ทำไมถึงเป็น "ทางหนีไฟ":**
+
+| สถานการณ์ก่อนวันสอบ | สิ่งที่ยังเดโมได้ |
+|---|---|
+| ระบบที่ 1 (Playbook Generator) มีปัญหา | ระบบที่ 2 จบในตัว: CTI เข้า → mapping → advisory 2 ระดับ |
+| ระบบที่ 2 (TI Annotation) มีปัญหา | ระบบที่ 1 เดโม playbook generation เต็มวงจร |
+| CTI Ingestion พังทั้งคู่ | fallback `--threat` เข้าระบบที่ 1 ตรงๆ (ตาราง manual mapping) |
 
 ---
 
@@ -809,6 +840,7 @@ graph TD
 | **8 ก.ค. 2569** | **CTI/MISP Ingestion Layer** + schema กลาง `threat_context.json` + **Human approval gate** (`status=approved`) ก่อน generate เสมอ — จุดนี้เปลี่ยนปรัชญาจาก "Fully Automated" เป็น "Human-in-the-loop" | เปลี่ยน input จากชื่อ threat พิมพ์มือเป็น CTI จริง โดยห้าม auto-generate จาก mapping ที่คนยังไม่เช็ค (commit `0616568`) |
 | **8 ก.ค. 2569** | ออกแบบ **3-Input Adapters** (User Report / SIEM Alert / IOC → schema กลาง), แผน validate T-number ด้วย `mitreattack-python`, แผน **TI Annotation 2 ระดับ** (ทางการ/เทคนิค) | ตอบโจทย์อาจารย์เรื่อง "ตัวแปลง input 3 แบบให้ map เป็น T-number ได้" — ยังเป็น design ยังไม่ลงมือ implement |
 | **8 ก.ค. 2569** | **ย้าย Human Approve Mapping ไปรวมกับ Review Gate ท้ายสุด** (v3) — เหลือ human gate จุดเดียว: reviewer เห็น mapping (ป้าย source/confidence) + playbook draft พร้อมกัน ตรวจครั้งเดียว | feedback อาจารย์: gate 2 จุดทำให้งานคนซ้ำซ้อน — generation ต้นทุนต่ำ ปล่อยรันก่อนแล้วตรวจรวมคุ้มกว่า (โค้ด `00_fetch_misp.py` ยังเป็นแบบ v2 รอปรับ) |
+| **8 ก.ค. 2569** | ยก **TI Feed Annotation ขึ้นเป็น "ระบบที่ 2"** เต็มตัว (จากเดิมเป็นแค่ output เสริม) + นิยาม "ทางหนีไฟ" ให้ตรงเจตนา: 2 ระบบจบในตัวเองแชร์ CTI ingestion เดียวกัน ถ้าระบบใดพังก่อนสอบ อีกระบบยังเดโมได้ | แนวคิดตั้งต้นของทีมเรื่อง 2 ระบบต่อกัน — เดิมเอกสารสื่อไม่ครบ ยกขึ้นเป็น section เต็มพร้อม diagram |
 
 ---
 

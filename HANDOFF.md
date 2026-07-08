@@ -164,3 +164,17 @@ Trade-off ที่ยอมรับ: mapping ผิด → generation เส�
 1. auto-chain เป็น default (mapping ทุกรายการวิ่งผ่านพร้อมป้าย ไม่หยุดรอคน)
 2. ป้าย source/confidence ของ mapping ต้องติดไปกับ playbook output ให้ reviewer เห็นตอนตรวจ
 3. ย้ายจุดบันทึก `review.reviewed_by/reviewed_at` ไปหลัง generate
+
+---
+
+## 2026-07-08 — ยก TI Feed Annotation เป็น "ระบบที่ 2" ใน architecture (ทางหนีไฟ)
+
+### บริบท
+
+แนวคิดตั้งต้นของทีม: โปรเจกต์มี **2 ระบบจบในตัวเอง** แชร์ CTI ingestion + `threat_context.json` เดียวกัน — (1) Playbook Generator, (2) **TI Feed Annotation** = ทุกครั้งที่ TI feed เข้ามา แปะคำอธิบาย 2 ระดับอัตโนมัติ (ฉบับทางการภาษาคนทั่วไป / ฉบับเทคนิคสำหรับ IT พร้อม T-number+IOC+ลิงก์ playbook) — นี่คือ "ทางหนีไฟ": ระบบใดพังก่อนสอบ อีกระบบยังเดโมได้
+
+เดิม architecture.md สื่อเรื่องนี้ไม่ครบ (เป็นแค่กล่อง "Output เสริม" เล็กๆ) — ยกขึ้นเป็น section เต็ม `## ระบบที่ 2 — TI Feed Annotation System` พร้อม diagram 2 ระบบ, วิธีทำ (reuse `ai_enrich_description()` pattern — LLM 2 รอบคนละ audience จาก context เดียว), และตารางสถานการณ์ทางหนีไฟ 3 แบบ + เพิ่ม branch ใน overview diagram + changelog
+
+### สถานะ
+
+ระบบที่ 2 ยังเป็น 📋 แผน (ยังไม่ implement) — โครงหนักๆ ที่ต้อง reuse มีครบแล้วใน `00_fetch_misp.py`
