@@ -40,53 +40,6 @@ source_doc: Lateral_Movement_IR_Playbook_v1
 - **Windows Security Event ID 4769**: Kerberos service ticket request (Pass-the-Ticket detection)
 - **Zeek SMB log**: การ access file share ผิดปกติ, ADMIN$ หรือ C$ share access
 
-### Sub: detection_queries
-**Splunk — ตรวจ Pass-the-Hash (Event ID 4624 Type 3 + NTLM จาก unusual source):**
-```spl
-index=windows_security EventCode=4624 Logon_Type=3 AuthenticationPackageName=NTLM
-| where NOT (src_ip="127.0.0.1" OR src_ip="::1")
-| stats count by src_ip, Account_Name, Workstation_Name, dest_host
-| where count > 5
-| sort -count
-```
-
-**Splunk — ตรวจ Explicit Credential Logon (Event ID 4648 — PSExec/WMI):**
-```spl
-index=windows_security EventCode=4648
-| where TargetServerName != ComputerName
-| stats count by SubjectUserName, TargetUserName, TargetServerName, ProcessName
-| where count > 2
-| sort -count
-```
-
-**Splunk — ตรวจ Admin Share Access (C$, ADMIN$):**
-```spl
-index=windows_security EventCode=5140
-| where ShareName IN ("\\\\*\\ADMIN$","\\\\*\\C$","\\\\*\\IPC$")
-| stats count by SubjectUserName, IpAddress, ShareName, ComputerName
-| sort -count
-```
-
-**CLI — ตรวจ SMB connection ผิดปกติด้วย Zeek:**
-```bash
-zeek-cut id.orig_h id.resp_h id.resp_p proto < conn.log | awk '$3==445' | sort | uniq -c | sort -rn | head 20
-```
-
-**Splunk — ตรวจ PSExec (Sysmon Event ID 1 + psexesvc.exe):**
-```spl
-index=sysmon EventCode=1
-| where Image LIKE "%psexesvc.exe%" OR ParentImage LIKE "%psexec.exe%"
-| table _time, ComputerName, Image, CommandLine, User, ParentImage
-```
-
-**Splunk — ตรวจ WMI lateral movement (wmiprvse spawn process):**
-```spl
-index=sysmon EventCode=1
-| where ParentImage LIKE "%WmiPrvSE.exe%"
-  AND NOT (Image LIKE "%WmiPrvSE.exe%" OR Image LIKE "%svchost.exe%")
-| table _time, ComputerName, ParentImage, Image, CommandLine
-```
-
 ### Sub: ioc_list
 - **Event ID 4648**: SubjectUserName ≠ TargetUserName (ใช้ credential คนอื่น login)
 - **Event ID 4624 Type 9**: NewCredentials logon — บ่งบอก Pass-the-Hash เมื่อ paired กับ NTLM
@@ -96,25 +49,19 @@ index=sysmon EventCode=1
 - **Time anomaly**: lateral movement เกิดรวดเร็วหลัง initial compromise ภายใน 1-2 ชั่วโมง
 - **Account**: Service account หรือ Domain Admin ถูกใช้บน machine ที่ไม่ควรมี (unusual workstation)
 
-### Sub: scope_analysis
-- สร้าง **lateral movement map**: Machine A → Machine B → Machine C โดย map จาก Event 4648/4624
-- ระบุ **credential ที่ถูกใช้**: account ชื่ออะไร, มี privilege ระดับไหน บน machine ใดบ้าง
-- ตรวจสอบ **high-value target** ที่ถูก pivot เข้า: Domain Controller, File Server, Database Server
-- ระบุว่า attacker อยู่ใน **machine ใดบ้าง** ณ ปัจจุบัน และต้องการ isolate กี่ เครื่อง
-- ตรวจสอบ **จุดเริ่มต้น (patient zero)**: machine แรกที่ถูก compromise และเริ่ม pivot
-- ประเมิน **blast radius**: ถ้า attacker ถึง DC แล้ว ต้องถือว่า full domain compromise
-
 ## Phase: containment
-### Sub: short_term
+### Sub: short_term_isolate_block [T1021.002, T1021.001]
 1. **Isolate machine ทุกเครื่อง** ที่ระบุว่า attacker เข้าถึง โดยย้ายเข้า quarantine VLAN
 2. **Block SMB (port 445) และ WMI (port 135, 49152-65535)** ระหว่าง workstation-to-workstation ที่ Firewall/switch ACL
-3. **Disable account** ที่ถูก compromise ซึ่งใช้ lateral movement: `Disable-ADAccount -Identity <username>`
-4. **Reset krbtgt password** หากสงสัยว่ามี Pass-the-Ticket หรือ Golden Ticket
-5. **Block RDP (port 3389)** จาก workstation ไปยัง workstation ชั่วคราว
-6. **Revoke Kerberos TGT** สำหรับ compromised account: Force re-authentication
-7. **ปิด PsExec/WMI remote execution** ผ่าน Group Policy สำหรับ non-admin machine
+3. **Block RDP (port 3389)** จาก workstation ไปยัง workstation ชั่วคราว
+4. **ปิด PsExec/WMI remote execution** ผ่าน Group Policy สำหรับ non-admin machine
 
-### Sub: long_term
+### Sub: short_term_credential [T1550.002]
+1. **Disable account** ที่ถูก compromise ซึ่งใช้ lateral movement: `Disable-ADAccount -Identity <username>`
+2. **Reset krbtgt password** หากสงสัยว่ามี Pass-the-Ticket หรือ Golden Ticket
+3. **Revoke Kerberos TGT** สำหรับ compromised account: Force re-authentication
+
+### Sub: long_term [T1550.002, T1021.002]
 - Implement **network micro-segmentation**: ไม่อนุญาต workstation-to-workstation communication
 - ใช้ **LAPS** เพื่อ randomize local admin password ป้องกัน lateral movement ด้วย same credential
 - Deploy **Privileged Access Workstation (PAW)** สำหรับ admin task เท่านั้น
@@ -129,7 +76,7 @@ index=sysmon EventCode=1
 - เก็บ **SMB/Zeek log** ที่แสดง lateral movement pattern
 
 ## Phase: eradication
-### Sub: process_removal
+### Sub: process_removal [T1021.002]
 - ลบ **psexesvc.exe** ที่อาจถูก drop บน target machine:
   ```powershell
   Get-ChildItem -Path C:\Windows -Name "psexesvc.exe" | Remove-Item -Force
@@ -140,13 +87,13 @@ index=sysmon EventCode=1
   ```
 - ลบ **service ที่สร้างโดย PSExec**: `sc.exe query | findstr PSEXESVC`
 
-### Sub: persistence_removal
+### Sub: persistence_removal [T1021.002, T1550.002]
 - ตรวจสอบ **new local user** ที่ attacker สร้างบน machine ที่ถูก pivot: `Get-LocalUser`
 - ลบ **scheduled task** ที่ถูกสร้างบน remote machine ผ่าน lateral movement
 - ตรวจสอบ **registry Run key** บนทุก machine ที่ถูก compromise
 - Reset **service account password** ที่ถูกใช้ในการ lateral movement
 
-### Sub: patching
+### Sub: patching [T1550.002, T1021.002]
 - อัปเดต **Windows** เพื่อ patch NTLM relay vulnerability (MS17-010, PrintNightmare ถ้ายังไม่ patch)
 - เปิด **SMB Signing** และ **LDAP Signing** ผ่าน Group Policy
 - ปิด **NTLM authentication** บน network level หากเป็นไปได้ (ใช้ Kerberos เท่านั้น)
@@ -164,5 +111,5 @@ index=sysmon EventCode=1
 - **Deploy LAPS** บนทุก workstation และ server ภายใน 30 วัน
 - Implement **network micro-segmentation** ด้วย VLAN หรือ host-based firewall
 - เพิ่ม **SIEM detection** สำหรับ Workstation-to-Workstation SMB และ explicit credential logon
-- ทำ **AD Tiering** และ enforce credential isolation ระหว่าง Tier
+- ทำ **AD Tiering** และ enforce credential isolation ระหว่าง Tier 
 - จัด **Purple Team exercise** เพื่อ validate detection ของ lateral movement technique

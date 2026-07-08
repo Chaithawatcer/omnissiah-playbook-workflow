@@ -24,6 +24,10 @@ COLLECTION_NAME = "omnissiah_procedures"
 # ใช้ sentence-transformers รัน local ไม่ต้องใช้ API key
 EMBEDDING_FN = embedding_functions.DefaultEmbeddingFunction()
 
+# regex สำหรับแท็กเทคนิคระดับ Sub: จับ [...] ที่ท้ายหัวข้อ + ดึง T-code รูปแบบ MITRE
+SUB_TECH_TAG_RE = re.compile(r"\[([^\]]*)\]\s*$")
+MITRE_TECH_RE = re.compile(r"T\d{4}(?:\.\d{3})?")
+
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
     """แยก YAML frontmatter และ body ออกจากไฟล์ markdown"""
@@ -72,6 +76,7 @@ def chunk_playbook(filepath: Path) -> list[dict]:
     chunks = []
     current_phase = None
     current_sub = None
+    current_sub_techs = None  # แท็กเทคนิคระดับ Sub (None = ใช้ของทั้งเล่มแทน)
     buffer = []
 
     def flush_chunk():
@@ -81,6 +86,9 @@ def chunk_playbook(filepath: Path) -> list[dict]:
             if content:
                 chunk_id = f"{filepath.stem}_{current_phase}_{current_sub}"
                 chunk_id = re.sub(r"[^a-zA-Z0-9_-]", "_", chunk_id)
+                # ระดับความละเอียด: ถ้า Sub มีแท็กเทคนิคของตัวเอง ใช้ตัวนั้น
+                # ถ้าไม่มี fallback ไปใช้ technique_ids ของทั้งเล่ม (backward-compatible)
+                chunk_techs = current_sub_techs if current_sub_techs else technique_ids
                 chunks.append({
                     "id": chunk_id,
                     "content": content,
@@ -88,7 +96,10 @@ def chunk_playbook(filepath: Path) -> list[dict]:
                         "phase": current_phase,
                         "sub_process": current_sub,
                         "threat_name": threat_name,
-                        "technique_ids": ",".join(technique_ids),  # ChromaDB ต้องเป็น string
+                        "technique_ids": ",".join(chunk_techs),  # ChromaDB ต้องเป็น string
+                        # เก็บไว้เผื่ออยากรู้ว่า chunk นี้มาจากไฟล์ที่ประกาศเทคนิคอะไรบ้าง
+                        "playbook_technique_ids": ",".join(technique_ids),
+                        "technique_source": "sub" if current_sub_techs else "playbook",
                         "severity": severity,
                         "source_doc": source_doc,
                         "chunk_type": f"{current_phase}_{current_sub}",
@@ -102,14 +113,30 @@ def chunk_playbook(filepath: Path) -> list[dict]:
             flush_chunk()
             current_phase = phase_match.group(1).strip().lower().replace(" ", "_")
             current_sub = None
+            current_sub_techs = None
             buffer = []
             continue
 
-        # ตรวจหัวข้อ Sub-process
+        # ตรวจหัวข้อ Sub-process (รองรับแท็กเทคนิคท้ายหัวข้อ เช่น "### Sub: dns_analysis [T1071.004]")
         sub_match = re.match(r"^### Sub:\s*(.+)", line.strip())
         if sub_match:
             flush_chunk()
-            current_sub = sub_match.group(1).strip().lower().replace(" ", "_")
+            raw_sub = sub_match.group(1).strip()
+            tag = SUB_TECH_TAG_RE.search(raw_sub)
+            if tag:
+                sub_techs = MITRE_TECH_RE.findall(tag.group(1))
+                current_sub_techs = sub_techs if sub_techs else None
+                raw_sub = SUB_TECH_TAG_RE.sub("", raw_sub).strip()  # ตัดแท็กออกจากชื่อ Sub
+                # เตือนถ้าแท็กมีเทคนิคที่ไม่ได้ประกาศไว้ใน frontmatter (กันพิมพ์ผิด)
+                unknown = [t for t in (current_sub_techs or []) if t not in technique_ids]
+                if unknown:
+                    console.print(
+                        f"[yellow]⚠ {filepath.name} / Sub '{raw_sub}': "
+                        f"แท็ก {unknown} ไม่อยู่ใน frontmatter technique_ids[/yellow]"
+                    )
+            else:
+                current_sub_techs = None
+            current_sub = raw_sub.lower().replace(" ", "_")
             buffer = []
             continue
 

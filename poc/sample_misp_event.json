@@ -1,0 +1,72 @@
+{
+  "Event": {
+    "id": "1337",
+    "uuid": "5f8d0c3e-1234-4a2b-9c3d-omnissiahdemo01",
+    "info": "WannaCry Ransomware Outbreak - SMBv1 Worm (EternalBlue)",
+    "date": "2024-05-12",
+    "threat_level_id": "1",
+    "analysis": "2",
+    "Org": { "name": "ThaiCERT" },
+    "Tag": [
+      { "name": "tlp:amber" },
+      { "name": "misp-galaxy:ransomware=\"WannaCry\"" },
+      { "name": "misp-galaxy:mitre-attack-pattern=\"Data Encrypted for Impact - T1486\"" },
+      { "name": "misp-galaxy:mitre-attack-pattern=\"Service Stop - T1489\"" }
+    ],
+    "Galaxy": [
+      {
+        "name": "Attack Pattern",
+        "type": "mitre-attack-pattern",
+        "GalaxyCluster": [
+          {
+            "value": "Exploitation of Remote Services - T1210",
+            "meta": { "external_id": ["T1210"] }
+          },
+          {
+            "value": "Inhibit System Recovery - T1490",
+            "meta": { "external_id": ["T1490"] }
+          }
+        ]
+      },
+      {
+        "name": "Ransomware",
+        "type": "ransomware",
+        "GalaxyCluster": [
+          { "value": "WannaCry", "meta": {} }
+        ]
+      }
+    ],
+    "Attribute": [
+      {
+        "type": "sha256",
+        "category": "Payload delivery",
+        "value": "24d004a104d4d54034dbcffc2a4b19a11f39008a575aa614ea04703480b1022c",
+        "comment": "WannaCry dropper mssecsvc.exe"
+      },
+      {
+        "type": "filename",
+        "category": "Payload delivery",
+        "value": "tasksche.exe",
+        "comment": "encryptor component dropped to disk"
+      },
+      {
+        "type": "domain",
+        "category": "Network activity",
+        "value": "iuqerfsodp9ifjaposdfjhgosurijfaewrwergwea.com",
+        "comment": "killswitch domain (sinkhole)"
+      },
+      {
+        "type": "ip-dst",
+        "category": "Network activity",
+        "value": "197.231.221.221",
+        "comment": "TOR relay / C2 contact"
+      },
+      {
+        "type": "port",
+        "category": "Network activity",
+        "value": "445",
+        "comment": "SMB propagation port (MS17-010 EternalBlue)"
+      }
+    ]
+  }
+}

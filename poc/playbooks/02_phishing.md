@@ -36,14 +36,6 @@ Log source ที่ต้องตรวจสอบสำหรับ Phishing
 - DNS Log: ตรวจ domain ที่ถูก resolve หลังเปิด email (ผิดปกติ, ใหม่, ยาวมาก)
 - Authentication Log: ตรวจ login จาก IP ใหม่หลังจากเวลาที่ผู้ใช้เปิด email
 
-### Sub: detection_queries
-Detection queries สำหรับ Phishing:
-- SIEM ค้นหา child process ของ mail client: `index=sysmon EventCode=1 ParentImage="*OUTLOOK.EXE" (Image="*cmd.exe" OR Image="*powershell.exe" OR Image="*wscript.exe")`
-- ค้นหา Office macro execution: `index=sysmon EventCode=1 ParentImage="*WINWORD.EXE" Image="*powershell.exe"`
-- ค้นหา URL phishing ใน Proxy Log: `index=proxy status=200 domain IN (threat_intel_feed)`
-- PowerShell ตรวจ email ที่ถูก report: `Get-MessageTrace -StartDate (Get-Date).AddDays(-1) -EndDate (Get-Date) | Where-Object {$_.Subject -like "*urgent*"}`
-- ตรวจ DMARC/SPF fail: `index=email authentication_result="fail" | stats count by sender_domain`
-
 ### Sub: ioc_list
 IOC สำหรับ Phishing:
 - Sender domain ที่ปลอมแปลง (typosquat): เช่น company-security@paypa1.com, hr@cornpany.com
@@ -51,13 +43,6 @@ IOC สำหรับ Phishing:
 - URL ที่มีลักษณะ redirect หรือ URL shortener เชื่อมไปยัง domain ที่จดทะเบียนใหม่
 - Process ที่ spawn จาก mail client: cmd.exe, powershell.exe, wscript.exe, mshta.exe
 - PowerShell ที่มี encoded string: `-enc`, `-EncodedCommand`, `-ep bypass`
-
-### Sub: scope_analysis
-วิธีประเมินขอบเขตของ Phishing attack:
-- ค้นหา email เดิมทั้ง inbox ขององค์กรว่ามีการส่งกี่คน: `Get-MessageTrace -SenderAddress "attacker@evil.com"`
-- ตรวจสอบว่ามีผู้ใช้คนไหน click link หรือ download attachment แล้วบ้างจาก Web Proxy/Email Gateway
-- ถ้ามีคนเปิด attachment: ตรวจ EDR ว่าเครื่องนั้นมี process ผิดปกติหลังจากนั้นหรือไม่
-- ตรวจสอบ credential stuffing: มี login ล้มเหลวหรือ login สำเร็จจาก IP ใหม่หลังเหตุการณ์ไหม
 
 ## Phase: containment
 ### Sub: short_term
@@ -84,7 +69,7 @@ Long-term containment สำหรับ Phishing:
 ## Phase: eradication
 ### Sub: process_removal
 กำจัด malware ที่อาจถูก drop หลังผู้ใช้เปิด phishing attachment:
-- ค้นหาและ kill process ผิดปกติที่ spawn จาก mail client: `Get-Process | Where-Object {$_.Parent.Name -like "*outlook*"}`
+- ค้นหา child process ที่ spawn จาก mail client (Get-Process ไม่มี property .Parent — ต้องใช้ Win32_Process โยง ParentProcessId): `Get-CimInstance Win32_Process | Where-Object { (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)").Name -match 'outlook|winword|excel' } | Select-Object ProcessId, Name, CommandLine` แล้ว kill ด้วย `Stop-Process -Id <pid> -Force`
 - ลบ payload ที่ถูก drop ลงใน temp folder: `Remove-Item $env:TEMP\*.exe -Force`
 - ตรวจสอบ startup items: `Get-CimInstance Win32_StartupCommand`
 

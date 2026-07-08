@@ -1,7 +1,7 @@
 ---
 threat_name: Brute Force
-technique_ids: ["T1110.001", "T1078", "T1021.001"]
-severity: High
+technique_ids: ["T1110.001", "T1110.003", "T1078"]
+severity: Medium
 source_doc: Brute_Force_IR_Playbook_v1
 ---
 
@@ -32,70 +32,31 @@ source_doc: Brute_Force_IR_Playbook_v1
 - ประสาน **HR** หาก executive account ถูก target เพื่อแจ้งเตือนล่วงหน้า
 
 ## Phase: detection
-### Sub: log_sources
+### Sub: log_sources [T1110.001]
 - **Windows Security Event Log**: Event ID 4625 (logon failure), 4740 (account lockout), 4771 (Kerberos pre-auth failure)
 - **Linux auth log**: `/var/log/auth.log` (Debian/Ubuntu), `/var/log/secure` (RHEL/CentOS)
 - **SSH log**: `/var/log/auth.log` — ดู `Failed password for` และ `Invalid user`
 - **Web Application Log**: ดู POST /login endpoint ที่มี HTTP 401/403 ซ้ำจาก IP เดียว
 - **VPN Access Log** (Cisco ASA, Palo Alto): ดู authentication failure สำหรับ remote access
-- **Azure AD Sign-in Log**: ดู `Sign-in risk` และ `Failure reason: Invalid username or password`
 - **RADIUS Log**: สำหรับ WiFi หรือ VPN ที่ใช้ RADIUS authentication
 
-### Sub: detection_queries
-**Splunk — ตรวจ Windows Brute Force (Event ID 4625):**
-```spl
-index=windows_security EventCode=4625
-| stats count by src_ip, Account_Name, Logon_Type
-| where count > 20
-| sort -count
-| eval alert="Possible Brute Force"
-```
+### Sub: log_sources_spray [T1110.003]
+- **Azure AD / Entra ID Sign-in Log**: ดู `Sign-in risk` และ `Failure reason: Invalid username or password` — password spraying มักโจมตี cloud identity ก่อน
+- **Microsoft 365 Unified Audit Log**: `UserLoginFailed` จาก IP เดียวกระจายไปหลาย mailbox
+- **ADFS / Federation Log**: authentication failure จำนวนมากที่กระจายข้าม account แต่ password น้อยรอบ (สัญญาณ spray ไม่ใช่ brute force ตรงๆ)
 
-**Splunk — ตรวจ Account Lockout (Event ID 4740):**
-```spl
-index=windows_security EventCode=4740
-| stats count by TargetUserName, _time
-| sort -_time
-| table _time, TargetUserName, count
-```
-
-**CLI — grep SSH brute force บน Linux:**
-```bash
-grep "Failed password" /var/log/auth.log | awk '{print $11}' | sort | uniq -c | sort -rn | head 20
-```
-
-**CLI — นับ failed login ต่อ IP บน Linux:**
-```bash
-grep "Failed password" /var/log/secure | grep -oP '(?<=from )\S+' | sort | uniq -c | sort -rn | awk '$1 > 10 {print $0}'
-```
-
-**Elastic (KQL) — Login failure rate:**
-```kql
-event.code: "4625" AND winlog.event_data.FailureReason: "Unknown user name or bad password"
-| where count() > 20 by source.ip, winlog.event_data.TargetUserName
-```
-
-**CLI — ตรวจสอบ account ที่ถูก lockout ใน AD:**
-```powershell
-Search-ADAccount -LockedOut | Select-Object Name, LockedOut, LastLogonDate, DistinguishedName
-```
-
-### Sub: ioc_list
+### Sub: ioc_list [T1110.001]
 - **High failure rate**: IP เดียว > 50 failed login ภายใน 5 นาที (threshold ปรับตาม baseline)
 - **Sequential username pattern**: ลอง admin, administrator, admin1, admin2, user1, user2
-- **Password spray pattern**: username หลาย account แต่ใช้ password เดียว (เช่น `Summer2024!`)
 - **Non-business hour activity**: login attempt ช่วง 02:00-05:00 จาก IP ต่างประเทศ
 - **Tor exit nodes / VPN IP**: IP ที่อยู่ใน known Tor exit node list หรือ commercial VPN ranges
-- **Logon Type 3 (Network) หรือ Type 10 (RemoteInteractive)** จาก IP ที่ไม่เคยใช้มาก่อน
+- **Logon Type 3 (Network)** จาก IP ที่ไม่เคยใช้มาก่อน (SSH/SMB/web auth)
 - **Kerberos Error Code 0x18** (KDC_ERR_PREAUTH_FAILED): บ่งบอก wrong password สำหรับ valid user
 
-### Sub: scope_analysis
-- นับ **จำนวน account ที่ถูก target** — ถ้า > 100 accounts อาจเป็น password spray ในระดับ domain
-- ตรวจสอบว่า **account ใดสำเร็จ login** หลังจาก failed หลายครั้ง (Event ID 4624 หลัง 4625)
-- ระบุ **Logon Type**: Type 3 = network logon, Type 10 = RDP — แต่ละ type มีความเสี่ยงต่างกัน
-- ตรวจสอบ **geographic source**: IP มาจากประเทศที่ผิดปกติสำหรับ organization หรือไม่
-- หาว่า attack เป็น **targeted** (username จำเพาะ) หรือ **spray** (username หลาย account, password น้อย)
-- ตรวจสอบ **privileged account** ที่ถูก target: DA, Schema Admin, Service Account
+### Sub: ioc_list_spray [T1110.003]
+- **Password spray pattern**: password เดียว (เช่น `Summer2024!`) ยิงกระจายไปหลาย account — failed login ต่อ account น้อย แต่จำนวน account ที่โดนสูง
+- **Low-and-slow timing**: failed login เว้นระยะเพื่อเลี่ยง lockout threshold (เช่น 1 ครั้ง/account/ชั่วโมง)
+- **Breadth over depth**: จำนวน distinct username ที่ถูกลองสูงผิดปกติจาก source เดียว ในเวลาสั้น
 
 ## Phase: containment
 ### Sub: short_term

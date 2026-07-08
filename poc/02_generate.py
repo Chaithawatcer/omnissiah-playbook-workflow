@@ -101,75 +101,211 @@ def load_technique_mapping() -> dict:
         return json.load(f)
 
 
-def query_rag(collection, query: str, phase: str, technique_ids: list[str], n_results: int = 5) -> list[str]:
+def load_threat_context(path: str, auto_approve: bool = False) -> dict:
     """
-    ดึง chunks จาก ChromaDB ด้วย metadata filter (phase) + semantic similarity
-    แล้วนำมากรอง technique_id ด้วย Python 
+    โหลด threat_context.json ที่ได้จาก 00_fetch_misp.py (MISP → CTI)
+    - บังคับ human-in-the-loop: status ต้องเป็น 'approved' (เว้นแต่ --auto-approve)
+    - ใช้เฉพาะเทคนิคที่ approved == True
+    - ประกอบ intel_text (description + IOCs) ไว้ป้อนเข้า RAG context
+    คืน dict: {threat_name, technique_ids, severity, intel_text}
     """
-    retrieved_docs = []
+    p = Path(path)
+    if not p.exists():
+        console.print(f"[red]❌ ไม่พบไฟล์ context: {p}[/red]")
+        sys.exit(1)
+    ctx = json.loads(p.read_text(encoding="utf-8"))
+
+    status = ctx.get("status", "pending")
+    if status != "approved" and not auto_approve:
+        console.print(
+            f"[red]❌ context ยังไม่ถูกอนุมัติ (status='{status}')[/red]\n"
+            "[yellow]   ต้องให้ human ยืนยัน mapping ก่อน: เปลี่ยน status เป็น 'approved'\n"
+            "   หรือรัน 00_fetch_misp.py --interactive หรือส่ง --auto-approve (ไม่แนะนำใน production)[/yellow]"
+        )
+        sys.exit(1)
+
+    technique_ids = [
+        m["technique_id"] for m in ctx.get("mapping", [])
+        if m.get("approved") and m.get("technique_id")
+    ]
+    if not technique_ids:
+        console.print("[red]❌ ไม่มีเทคนิคที่ถูกอนุมัติใน context[/red]")
+        sys.exit(1)
+
+    # ประกอบบริบทภัยคุกคามจริงจาก CTI (แทนบทบาทของ threat.md)
+    intel_lines = [f"**บริบทภัยคุกคามจาก CTI (MISP event {ctx.get('source',{}).get('misp_event_id','?')}):**",
+                   ctx.get("description", ctx.get("threat_name", ""))]
+    iocs = ctx.get("iocs", [])
+    if iocs:
+        intel_lines.append("**ตัวบ่งชี้การโจมตี (IOCs) ที่พบ:**")
+        for i in iocs[:25]:
+            comment = f" — {i['comment']}" if i.get("comment") else ""
+            intel_lines.append(f"- {i.get('type','')}: `{i.get('value','')}`{comment}")
+
+    return {
+        "threat_name": ctx.get("threat_name", "Unknown Threat"),
+        "technique_ids": technique_ids,
+        "severity": ctx.get("severity", "Medium"),
+        "intel_text": "\n".join(intel_lines),
+    }
+
+
+def query_rag(collection, query: str, phase: str, technique_ids: list[str],
+              n_results: int = 5, threat_name: str = None) -> list[dict]:
+    """
+    Tiered + labeled retrieval — จัดลำดับความน่าเชื่อถือของแหล่งเพื่อลด contamination:
+      - primary   : chunk ที่ตรงเทคนิค และ "สะอาด" = มาจาก playbook ของ threat นี้เอง
+                    หรือถูกแท็กระดับ Sub (technique_source == "sub") → ยึดเป็นแกน
+      - secondary : chunk ที่ตรงเทคนิค แต่มาจากเล่มอื่นแบบ broad (แท็กระดับเล่ม) → ใช้เสริม nuance
+      - fallback  : ดึง phase อย่างเดียว เฉพาะเมื่อ "ไม่มี" chunk ตรงเทคนิคเลย → ติดธงว่าไม่ยืนยันเทคนิค
+    คืน list ของ dict: {doc, threat_name, technique_ids, matched, tier}
+    """
+    def matched_techs(meta):
+        tstr = meta.get("technique_ids", "") or ""
+        return [t for t in technique_ids if t in tstr]
+
+    primary, secondary = [], []
     seen_ids = set()
-    
-    where_filter = {"phase": {"$eq": phase}}
-    
+
     try:
         results = collection.query(
             query_texts=[query],
-            n_results=30, # ดึงมาเผื่อกรอง
-            where=where_filter,
-            include=["documents", "metadatas", "ids"],
+            n_results=30,  # ดึงมาเผื่อกรอง
+            where={"phase": {"$eq": phase}},
+            include=["documents", "metadatas"],  # ChromaDB คืน ids ให้เสมออยู่แล้ว ห้ามใส่ "ids" ใน include (จะ error)
         )
         if results and results["documents"] and results["documents"][0]:
             for doc_id, doc, meta in zip(results["ids"][0], results["documents"][0], results["metadatas"][0]):
-                tech_ids_str = meta.get("technique_ids", "")
-                
-                # Check if any of the target technique_ids is in this chunk's technique_ids
-                if any(tech_id in tech_ids_str for tech_id in technique_ids):
-                    if doc_id not in seen_ids:
-                        seen_ids.add(doc_id)
-                        retrieved_docs.append(doc)
-                        if len(retrieved_docs) >= n_results:
-                            break
+                if doc_id in seen_ids:
+                    continue
+                m = matched_techs(meta)
+                if not m:
+                    continue  # ไม่ตรงเทคนิคเป้าหมาย → ตัดทิ้ง (กันเนื้อหาเล่มอื่นที่ไม่เกี่ยว)
+                seen_ids.add(doc_id)
+                item = {
+                    "doc": doc,
+                    "threat_name": meta.get("threat_name", "") or "",
+                    "technique_ids": meta.get("technique_ids", "") or "",
+                    "matched": m,
+                }
+                is_own = bool(threat_name) and item["threat_name"] == threat_name
+                is_precise = meta.get("technique_source") == "sub"
+                if is_own or is_precise:
+                    item["tier"] = "primary"
+                    primary.append(item)
+                else:
+                    item["tier"] = "secondary"
+                    secondary.append(item)
     except Exception:
         pass
 
-    # ถ้าดึงไม่ได้เลย fallback ดึงด้วย phase อย่างเดียว
-    if not retrieved_docs:
+    # เลือก primary ให้เต็มก่อน แล้วค่อยเติม secondary จนครบโควตา
+    chosen = primary[:n_results]
+    if len(chosen) < n_results:
+        chosen += secondary[: n_results - len(chosen)]
+
+    # fallback เฉพาะเมื่อไม่มี chunk ตรงเทคนิคเลย (ครองเทคนิคไม่ได้จริงๆ)
+    if not chosen:
         try:
             results = collection.query(
                 query_texts=[query],
                 n_results=min(3, n_results),
                 where={"phase": {"$eq": phase}},
-                include=["documents"],
+                include=["documents", "metadatas"],
             )
             if results and results["documents"] and results["documents"][0]:
-                retrieved_docs = results["documents"][0]
+                for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+                    chosen.append({
+                        "doc": doc,
+                        "threat_name": (meta or {}).get("threat_name", "") or "",
+                        "technique_ids": (meta or {}).get("technique_ids", "") or "",
+                        "matched": [],
+                        "tier": "fallback",
+                    })
         except Exception:
             pass
 
-    return retrieved_docs[:n_results]
+    return chosen[:n_results]
+
+
+def check_technique_coverage(collection, technique_ids: list[str]) -> list[str]:
+    """
+    ตรวจว่า technique_id ตัวไหน "ไม่มี chunk ใดๆ ใน KB รองรับเลย"
+    - ดึง metadata ทุก chunk ออกมา (KB เล็ก จึงกวาดทั้งหมดได้)
+    - ใช้ substring match ให้ตรงกับตรรกะจริงใน query_rag() เพื่อไม่ให้ผลไม่ตรงกัน
+      (เช่น target 'T1071' จะถือว่า cover ถ้ามี chunk ที่ metadata เป็น 'T1071.004')
+    คืน: list ของ technique_id ที่ "ขาด" การรองรับใน KB (เรียงตามลำดับเดิม)
+    """
+    try:
+        all_meta = collection.get(include=["metadatas"]).get("metadatas", []) or []
+    except Exception:
+        # เช็คไม่ได้ → ไม่ฟันธงว่าขาด เพื่อไม่ให้ทั้งงานล้ม
+        return []
+
+    covered = set()
+    for meta in all_meta:
+        tech_str = (meta or {}).get("technique_ids", "") or ""
+        for tid in technique_ids:
+            if tid in tech_str:
+                covered.add(tid)
+
+    return [tid for tid in technique_ids if tid not in covered]
 
 
 def generate_section(model, section: dict, threat_name: str, technique_ids: list[str],
-                     retrieved_chunks: list[str]) -> str:
+                     retrieved_chunks: list[str], missing_techs: list[str] = None,
+                     intel_text: str = "") -> str:
     """
     สร้างเนื้อหา 1 Phase ด้วย LLM
     Input: fill instruction + retrieved chunks จาก RAG
     Output: Markdown content ของ Phase นั้น
     """
-    context = "\n\n---\n".join(retrieved_chunks) if retrieved_chunks else "ไม่พบข้อมูลที่เกี่ยวข้องใน Knowledge Base"
+    def _fmt(item):
+        # ติดป้ายที่มา + เทคนิคของแต่ละ chunk เพื่อให้ LLM เห็น provenance และกรองเองได้
+        return f"(threat={item.get('threat_name','')} | technique={item.get('technique_ids','')})\n{item.get('doc','')}"
+
+    primary_c = [c for c in retrieved_chunks if isinstance(c, dict) and c.get("tier") == "primary"]
+    secondary_c = [c for c in retrieved_chunks if isinstance(c, dict) and c.get("tier") == "secondary"]
+    fallback_c = [c for c in retrieved_chunks if isinstance(c, dict) and c.get("tier") == "fallback"]
+
+    parts = []
+    if primary_c:
+        parts.append("[ขั้นตอนหลัก — ยึดเป็นแกนของ playbook ต้องครอบคลุมให้ครบ]\n"
+                     + "\n\n---\n".join(_fmt(c) for c in primary_c))
+    if secondary_c:
+        parts.append("[บริบทเสริม — ใช้เพื่อปรับให้เข้ากับ threat เท่านั้น ห้ามยกเป็นขั้นตอนหลัก"
+                     " ถ้าเนื้อหาไม่เกี่ยวกับเทคนิคเป้าหมาย]\n"
+                     + "\n\n---\n".join(_fmt(c) for c in secondary_c))
+    if fallback_c:
+        parts.append("[บริบทกว้าง (ยังไม่ยืนยันว่าตรงเทคนิค) — ใช้ด้วยความระมัดระวัง]\n"
+                     + "\n\n---\n".join(_fmt(c) for c in fallback_c))
+    context = "\n\n".join(parts) if parts else "ไม่พบข้อมูลที่เกี่ยวข้องใน Knowledge Base"
+
+    missing_note = ""
+    if missing_techs:
+        missing_note = (
+            f"\n**⚠️ หมายเหตุความครอบคลุม:** เทคนิคต่อไปนี้ไม่มีข้อมูลอ้างอิงใน Knowledge Base เลย: "
+            f"{', '.join(missing_techs)}\n"
+            f"สำหรับส่วนที่เกี่ยวข้องกับเทคนิคเหล่านี้ ห้ามแต่งชื่อเครื่องมือ/Event ID/คำสั่งที่เจาะจงขึ้นมาเอง "
+            f"ให้เขียนเป็นแนวทางทั่วไปที่ระมัดระวัง และกำกับในตารางว่า '(ยังไม่ได้ตรวจสอบกับ KB)'\n"
+        )
+
+    intel_block = f"\n{intel_text}\n" if intel_text else ""
 
     prompt = f"""
 {section['fill_instruction']}
 
 **Threat:** {threat_name}
 **MITRE ATT&CK Techniques:** {', '.join(technique_ids)}
-
+{intel_block}{missing_note}
 **ข้อมูลอ้างอิงจาก Knowledge Base (IR Playbook จริง):**
 {context}
 
 **คำแนะนำ:**
-- ใช้ข้อมูลจาก Knowledge Base ด้านบนเป็นหลัก
-- ปรับแต่งให้เหมาะสมกับ threat "{threat_name}" โดยเฉพาะ
+- ยึด "ขั้นตอนหลัก" เป็นโครงของ playbook เสมอ และต้องครอบคลุมให้ครบ
+- ใช้ "บริบทเสริม"/"บริบทกว้าง" เฉพาะเพื่อปรับถ้อยคำและเพิ่มรายละเอียดให้เข้ากับ threat "{threat_name}" เท่านั้น
+- แต่ละ chunk มีป้าย (threat=... | technique=...) กำกับ — **ถ้าเนื้อหา chunk เป็นของเทคนิคที่ไม่อยู่ใน [{', '.join(technique_ids)}] ห้ามนำขั้นตอนนั้นมาใส่ playbook เด็ดขาด** (เช่นขั้นตอนขโมย/รีเซ็ต credential ที่ไม่เกี่ยวกับเทคนิคเป้าหมาย)
+- ปรับ nuance ให้เข้ากับลักษณะเฉพาะของ threat "{threat_name}" (เช่น worm ที่แพร่อัตโนมัติ ต้องเน้น containment ก่อน remediate)
 - อย่าเขียนทั่วไปเกินไป ให้เฉพาะเจาะจงกับ technique และ threat นี้
 - ถ้า Knowledge Base มีคำสั่ง CLI ให้ใส่ด้วย
 - เขียนเป็นภาษาไทย
@@ -195,11 +331,28 @@ def generate_section(model, section: dict, threat_name: str, technique_ids: list
 
 
 def assemble_playbook(threat_name: str, severity: str, technique_ids: list[str],
-                      sections: dict[str, str]) -> str:
+                      sections: dict[str, str], missing_techs: list[str] = None) -> str:
     """ประกอบ Playbook สมบูรณ์จาก sections ที่ generate แล้ว"""
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    missing_techs = missing_techs or []
 
     techniques_table = "\n".join([f"| {tid} |" for tid in technique_ids])
+
+    # ติดธง ⚠️ ต่อท้ายเทคนิคที่ไม่มี KB รองรับ ในแถว MITRE ATT&CK
+    mitre_cell = ', '.join(
+        f"{tid} ⚠️" if tid in missing_techs else tid for tid in technique_ids
+    )
+
+    # Banner เตือนความครอบคลุม (โผล่เฉพาะเมื่อมีเทคนิคที่ขาด KB)
+    coverage_banner = ""
+    if missing_techs:
+        coverage_banner = (
+            "> ## ⚠️ Knowledge Coverage Warning\n"
+            f"> เทคนิคต่อไปนี้ **ไม่มีข้อมูลอ้างอิงใน Knowledge Base เลย:** {', '.join(missing_techs)}\n"
+            "> เนื้อหาส่วนที่เกี่ยวข้องกับเทคนิคเหล่านี้ถูกสร้างจากความรู้ทั่วไปของ AI (ไม่ได้อิง IR Playbook จริง)\n"
+            "> จึงมีความเสี่ยงที่ playbook จะ **ประกาศครอบคลุมเทคนิคที่ไม่มีขั้นตอนรับมือจริงรองรับ**\n"
+            "> **ต้องให้ผู้เชี่ยวชาญตรวจสอบเทคนิคที่ติดธง ⚠️ เป็นพิเศษก่อนใช้งาน**\n\n---\n\n"
+        )
 
     header = f"""# 🛡️ Incident Response Playbook: {threat_name}
 
@@ -209,14 +362,14 @@ def assemble_playbook(threat_name: str, severity: str, technique_ids: list[str],
 
 ---
 
-## 📋 Header Information
+{coverage_banner}## 📋 Header Information
 
 | Field | Value |
 |-------|-------|
 | **Threat Name** | {threat_name} |
 | **Severity** | {severity} |
 | **Status** | DRAFT |
-| **MITRE ATT&CK** | {', '.join(technique_ids)} |
+| **MITRE ATT&CK** | {mitre_cell} |
 
 ---
 
@@ -233,7 +386,9 @@ def assemble_playbook(threat_name: str, severity: str, technique_ids: list[str],
 
 def main():
     parser = argparse.ArgumentParser(description="Omnissiah Playbook Generator")
-    parser.add_argument("--threat", type=str, help="ชื่อ threat เช่น 'WannaCry', 'Phishing'")
+    parser.add_argument("--threat", type=str, help="ชื่อ threat เช่น 'WannaCry', 'Phishing' (ใช้ technique_mapping.json)")
+    parser.add_argument("--context", type=str, help="path ไฟล์ threat_context.json จาก 00_fetch_misp.py (MISP/CTI)")
+    parser.add_argument("--auto-approve", action="store_true", help="ข้ามการเช็ค status=approved ของ context (ไม่แนะนำ)")
     parser.add_argument("--list", action="store_true", help="แสดงรายชื่อ threat ที่รองรับ")
     parser.add_argument("--n-chunks", type=int, default=5, help="จำนวน chunks ที่ดึงต่อ phase (default: 5)")
     args = parser.parse_args()
@@ -247,25 +402,34 @@ def main():
             console.print(f"  • [cyan]{threat}[/cyan] — {', '.join(info['technique_ids'])} ({info['severity']})")
         return
 
-    if not args.threat:
-        console.print("[red]❌ กรุณาระบุ --threat หรือใช้ --list เพื่อดูรายชื่อ[/red]")
+    # แหล่ง input: --context (MISP/CTI) มาก่อน แล้วค่อย --threat (static mapping)
+    intel_text = ""
+    if args.context:
+        ctx = load_threat_context(args.context, auto_approve=args.auto_approve)
+        threat_key = ctx["threat_name"]
+        technique_ids = ctx["technique_ids"]
+        severity = ctx["severity"]
+        intel_text = ctx["intel_text"]
+        console.print(f"[green]✅ โหลด context จาก MISP/CTI:[/green] [cyan]{args.context}[/cyan]")
+    elif args.threat:
+        # ค้นหา threat (case-insensitive)
+        threat_key = None
+        for key in mapping:
+            if key.lower() == args.threat.lower():
+                threat_key = key
+                break
+
+        if not threat_key:
+            console.print(f"[red]❌ ไม่พบ threat '{args.threat}' — ใช้ --list เพื่อดูรายชื่อ[/red]")
+            sys.exit(1)
+
+        threat_info = mapping[threat_key]
+        technique_ids = threat_info["technique_ids"]
+        severity = threat_info["severity"]
+    else:
+        console.print("[red]❌ กรุณาระบุ --threat, --context หรือใช้ --list[/red]")
         parser.print_help()
         sys.exit(1)
-
-    # ค้นหา threat (case-insensitive)
-    threat_key = None
-    for key in mapping:
-        if key.lower() == args.threat.lower():
-            threat_key = key
-            break
-
-    if not threat_key:
-        console.print(f"[red]❌ ไม่พบ threat '{args.threat}' — ใช้ --list เพื่อดูรายชื่อ[/red]")
-        sys.exit(1)
-
-    threat_info = mapping[threat_key]
-    technique_ids = threat_info["technique_ids"]
-    severity = threat_info["severity"]
 
     console.print(f"\n[bold cyan]🚀 Omnissiah Playbook Generator[/bold cyan]")
     console.print(f"🎯 Threat: [bold]{threat_key}[/bold]")
@@ -295,6 +459,19 @@ def main():
         console.print("[red]❌ ไม่พบ ChromaDB collection — กรุณารัน 01_ingest.py ก่อน[/red]")
         sys.exit(1)
 
+    # ตรวจความครอบคลุม: technique_id ไหนไม่มี chunk รองรับใน KB เลย
+    missing_techs = check_technique_coverage(collection, technique_ids)
+    if missing_techs:
+        console.print(
+            f"[bold yellow]⚠️  Coverage Warning:[/bold yellow] ไม่พบข้อมูลใน KB สำหรับเทคนิค: "
+            f"[red]{', '.join(missing_techs)}[/red]"
+        )
+        console.print(
+            "[yellow]   เนื้อหาส่วนที่เกี่ยวข้องจะอิงความรู้ทั่วไปของ AI และจะถูกแปะป้ายเตือนในเอกสาร[/yellow]\n"
+        )
+    else:
+        console.print("[green]✅ Coverage: ทุกเทคนิคมีข้อมูลอ้างอิงใน KB[/green]\n")
+
     # Per-Section Generation Loop
     sections = {}
     with Progress(
@@ -314,14 +491,19 @@ def main():
                 phase=phase,
                 technique_ids=technique_ids,
                 n_results=args.n_chunks,
+                threat_name=threat_key,
             )
             progress.update(task, description=f"[cyan]Phase {phase}: retrieved {len(retrieved_chunks)} chunks...")
 
             # Step 2: LLM Generate
-            content = generate_section(model, section, threat_key, technique_ids, retrieved_chunks)
-            
-            # ถ้าไม่ได้ข้อมูลจาก RAG เลย ให้แปะป้ายแจ้งเตือนไว้ต้นเนื้อหาของ Phase นั้น
-            if len(retrieved_chunks) == 0:
+            content = generate_section(model, section, threat_key, technique_ids, retrieved_chunks,
+                                       missing_techs, intel_text=intel_text)
+
+            # แปะป้ายเตือนถ้าไม่มีข้อมูลเลย หรือได้มาเฉพาะ fallback (ครองเทคนิคไม่ได้)
+            only_fallback = bool(retrieved_chunks) and all(
+                isinstance(c, dict) and c.get("tier") == "fallback" for c in retrieved_chunks
+            )
+            if len(retrieved_chunks) == 0 or only_fallback:
                 content = "> ⚠️ **คำเตือน:** เนื้อหาส่วนนี้สร้างจากความรู้ทั่วไปของ AI โดยตรง (Zero-Day) เนื่องจากไม่พบข้อมูลในองค์ความรู้ (RAG)\n\n" + content
                 
             sections[phase] = content
@@ -329,7 +511,7 @@ def main():
             progress.stop_task(task)
 
     # Assemble Playbook
-    playbook_md = assemble_playbook(threat_key, severity, technique_ids, sections)
+    playbook_md = assemble_playbook(threat_key, severity, technique_ids, sections, missing_techs)
 
     # บันทึกไฟล์
     OUTPUT_DIR.mkdir(exist_ok=True)
